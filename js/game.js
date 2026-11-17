@@ -6619,48 +6619,78 @@ function raceRows() {
     });
 }
 
-/* tower duel */
+/* tower duel: every player stands on a rooftop out in the villages, Najrani mud towers first.
+   Tries each candidate as the first post and keeps the group with the smallest height gap,
+   so nobody starts with a big high-ground advantage. Deterministic for a given world. */
 function duelSpots(blds, n) {
-  var spots = [{ x: 0, z: 0, ax: 1, az: 0, w: 6, y: CAMY - 1.65 }];
   var cand = blds.filter(function (b) {
     var d = Math.hypot(b.x, b.z);
-    return b.l <= 2 && Math.abs(b.a) < 70 * D2R && d > 95 && d < 280 && b.w >= 7;
+    return Math.abs(b.a) < 75 * D2R && d > 95 && d < 300 && (b.tower || (b.l <= 2 && b.w >= 7));
   });
-  var used = [];
-  for (var k = 0; k < n - 1; k++) {
-    var want = (-55 + (110 * (k + 0.5)) / (n - 1)) * D2R,
-      best = null,
-      bc = 1e9;
-    cand.forEach(function (b) {
-      if (used.indexOf(b) >= 0) return;
-      if (
-        !spots.every(function (q) {
-          return Math.hypot(q.x - b.x, q.z - b.z) > 45;
-        })
-      )
-        return;
-      var c = Math.abs(b.a - want) * 300 + Math.abs(Math.hypot(b.x, b.z) - 170) * 0.4;
-      if (c < bc) {
-        bc = c;
-        best = b;
-      }
+  if (!cand.length) cand = blds.slice(0, Math.max(n, 1));
+  var gap = function (p, q) {
+    return Math.hypot(p.x - q.x, p.z - q.z);
+  };
+  function group(first) {
+    var g = [first];
+    while (g.length < n) {
+      var best = null,
+        bc = 1e9;
+      cand.forEach(function (b) {
+        if (g.indexOf(b) >= 0) return;
+        var near = 1e9,
+          farthest = 0;
+        g.forEach(function (q) {
+          var d = gap(b, q);
+          near = Math.min(near, d);
+          farthest = Math.max(farthest, d);
+        });
+        if (near < 45) return;
+        var c =
+          (b.tower ? 0 : 60) +
+          Math.abs(b.h - first.h) * 4 +
+          Math.max(0, farthest - 260) * 2 +
+          Math.abs(Math.hypot(b.x, b.z) - 170) * 0.2;
+        if (c < bc) {
+          bc = c;
+          best = b;
+        }
+      });
+      if (!best) return null;
+      g.push(best);
+    }
+    var hs = g.map(function (b) {
+      return b.h;
     });
-    if (!best)
-      best =
-        cand.filter(function (b) {
-          return used.indexOf(b) < 0;
-        })[0] || cand[0];
-    used.push(best);
-    spots.push({
-      x: best.x,
-      z: best.z,
-      ax: Math.cos(best.a),
-      az: Math.sin(best.a),
-      w: best.w,
-      y: best.h + 0.5
-    });
+    var score =
+      (Math.max.apply(null, hs) - Math.min.apply(null, hs)) * 4 +
+      g.filter(function (b) {
+        return !b.tower;
+      }).length *
+        60;
+    return { g: g, score: score };
   }
-  return spots;
+  var pick = null;
+  cand.forEach(function (b) {
+    var r2 = group(b);
+    if (r2 && (!pick || r2.score < pick.score)) pick = r2;
+  });
+  var chosen = pick ? pick.g : cand.slice(0, n).concat(blds.slice(0, n)).slice(0, n);
+  // left-to-right order keeps each player's post stable across clients
+  chosen = chosen.slice().sort(function (p, q) {
+    return p.a - q.a;
+  });
+  return chosen.map(function (b) {
+    return {
+      x: b.x,
+      z: b.z,
+      ax: Math.cos(b.a),
+      az: Math.sin(b.a),
+      w: b.tower ? b.w * 0.78 : b.w,
+      y: b.h + 0.5,
+      tower: !!b.tower
+    };
+  });
 }
 function postPos(sp, p) {
   var off = (p - 1) * Math.max(1, sp.w / 2 - 1.6);
