@@ -5083,8 +5083,14 @@ function drawHud() {
   if (false) txt('ضباب كثيف، انتظر انقشاعه', CX, 100, 12, '#f0ead8', 'center');
   txt('الوقت', R, 60, 11, HUDD, 'right');
   txt(clockText(S.time), R, 82, 20, S.time < 15 ? '#ff7a5a' : HUDC, 'right');
-  if (S.duel) txt('سقطاتك ' + ar(duelDeaths(myPeer())), L, 104, 11, HUDD, 'left');
-  else txt('الرصاص ' + ar(S.ammo), L, 104, 11, HUDD, 'left');
+  if (S.duel) {
+    txt('سقطاتك ' + ar(duelDeaths(myPeer())), L, 104, 11, HUDD, 'left');
+    txt('الصحة', L, 124, 11, HUDD, 'left');
+    for (var hp = 0; hp < 2; hp++) {
+      ctx.fillStyle = hp < MP.hp ? '#cf3b2e' : 'rgba(255,255,255,.18)';
+      ctx.fillRect(L + 34 + hp * 16, 117, 12, 8);
+    }
+  } else txt('الرصاص ' + ar(S.ammo), L, 104, 11, HUDD, 'left');
   for (var i = 0; i < (S.duel ? 0 : S.ammo); i++) {
     var rx = L + (i % 10) * 7,
       ry = 110 + Math.floor(i / 10) * 16;
@@ -6768,8 +6774,9 @@ function duelRows() {
 function duelHitMe(shooter, nm, head) {
   if (!head && MP.hp > 1) {
     MP.hp--;
-    S.hurt = 0.6;
-    S.banner = { text: 'أصابك ' + nm + '! احتمِ', col: '#e0603f', t: 1.4 };
+    S.hurt = 1;
+    sfxImpact(20, true);
+    S.banner = { text: 'أصابك ' + nm + ' · طلقة ثانية تسقطك! احتمِ', col: '#e0603f', t: 2.6 };
     return;
   }
   S.dead = 5;
@@ -6806,6 +6813,14 @@ function drawDuelFx() {
   }
   if (S.hurt > 0) {
     ctx.fillStyle = 'rgba(200,20,10,' + S.hurt * 0.45 + ')';
+    ctx.fillRect(0, 0, CW, CH);
+  }
+  if (MP.hp < 2 && S.dead <= 0) {
+    var pulse = 0.25 + 0.12 * Math.sin(performance.now() / 260),
+      edge = ctx.createRadialGradient(CX, CY, CH * 0.45, CX, CY, Math.max(CW, CH) * 0.75);
+    edge.addColorStop(0, 'rgba(200,20,10,0)');
+    edge.addColorStop(1, 'rgba(200,20,10,' + pulse + ')');
+    ctx.fillStyle = edge;
     ctx.fillRect(0, 0, CW, CH);
   }
   if (S.dead > 0) {
@@ -7171,7 +7186,12 @@ function duelShot(hit, part) {
     MP.shots.push({ q: MP.q, t: hit.peer, h: part });
     if (MP.shots.length > 6) MP.shots.shift();
     pres({ sh: MP.shots.slice(), hn: MP.hits });
-    banner((part === 2 ? 'طلقة رأس في ' : 'أصبت ') + hit.tagName, '#7fae5a');
+    S.banner = {
+      text:
+        part === 2 ? 'طلقة رأس في ' + hit.tagName : 'أصبت ' + hit.tagName + ' في الجسم · طلقة ثانية تسقطه',
+      col: '#7fae5a',
+      t: 2.4
+    };
   } else banner('أخطأت', '#c9a46a');
 }
 function duelUpdate(sdt, dt) {
