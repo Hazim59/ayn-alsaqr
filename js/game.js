@@ -45,6 +45,7 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
+import { Pass, FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
@@ -1134,6 +1135,70 @@ var stageW = 640,
   stageH = 360,
   basePR = 1,
   rs = 1;
+/* stylised look: ink outlines from depth edges, richer colour and soft cel steps.
+   Runs right after the scene render, at every quality level. */
+var STYLE_FS = [
+  'uniform sampler2D tDiffuse; uniform sampler2D tDepth; uniform vec2 res; uniform float near; uniform float far; uniform float px;',
+  'varying vec2 vUv;',
+  'float lin(float d){ float z = d * 2.0 - 1.0; return (2.0 * near * far) / (far + near - z * (far - near)); }',
+  'float inv(vec2 uv){ return 1.0 / lin(texture2D(tDepth, uv).r); }',
+  'void main(){',
+  '  vec4 c = texture2D(tDiffuse, vUv);',
+  '  float raw = texture2D(tDepth, vUv).r;',
+  '  vec2 o = vec2(px) / res;',
+  '  float w = inv(vUv);',
+  '  float lap = inv(vUv + vec2(o.x, 0.0)) + inv(vUv - vec2(o.x, 0.0)) + inv(vUv + vec2(0.0, o.y)) + inv(vUv - vec2(0.0, o.y)) - 4.0 * w;',
+  '  float d = 1.0 / w;',
+  '  float edge = smoothstep(0.012, 0.045, abs(lap) / w) * (1.0 - smoothstep(380.0, 1100.0, d));',
+  '  if (raw > 0.99995) edge = 0.0;',
+  '  vec3 col = c.rgb;',
+  '  float l = dot(col, vec3(0.2126, 0.7152, 0.0722));',
+  '  col = max(mix(vec3(l), col, 1.3), 0.0);',
+  '  float lq = floor(l * 6.0 + 0.5) / 6.0;',
+  '  col *= mix(1.0, (lq + 0.04) / (l + 0.04), 0.3);',
+  '  col = mix(col, col * vec3(0.16, 0.11, 0.08), edge * 0.9);',
+  '  gl_FragColor = vec4(col, c.a);',
+  '}'
+].join('\n');
+class StylePass extends Pass {
+  constructor() {
+    super();
+    this.needsSwap = true;
+    this.mat = new THREE.ShaderMaterial({
+      uniforms: {
+        tDiffuse: { value: null },
+        tDepth: { value: null },
+        res: { value: new THREE.Vector2(1, 1) },
+        near: { value: camera.near },
+        far: { value: camera.far },
+        px: { value: 1 }
+      },
+      vertexShader:
+        'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: STYLE_FS,
+      depthTest: false,
+      depthWrite: false
+    });
+    this.fsQuad = new FullScreenQuad(this.mat);
+  }
+  setSize(w, h) {
+    this.mat.uniforms.res.value.set(w, h);
+    this.mat.uniforms.px.value = Math.max(1, Math.round(h / 520));
+  }
+  render(renderer, writeBuffer, readBuffer) {
+    var u = this.mat.uniforms;
+    u.tDiffuse.value = readBuffer.texture;
+    u.tDepth.value = readBuffer.depthTexture;
+    u.near.value = camera.near;
+    u.far.value = camera.far;
+    renderer.setRenderTarget(this.renderToScreen ? null : writeBuffer);
+    this.fsQuad.render(renderer);
+  }
+  dispose() {
+    this.mat.dispose();
+    this.fsQuad.dispose();
+  }
+}
 function setupPost() {
   var q = QUAL[save.q];
   if (composer) {
@@ -1145,9 +1210,13 @@ function setupPost() {
     composer = null;
   }
   bloomPass = gtaoPass = smaaPass = null;
-  if (!q.post) return;
-  composer = new EffectComposer(renderer);
+  var rt = new THREE.WebGLRenderTarget(stageW, stageH, { type: THREE.HalfFloatType });
+  rt.depthTexture = new THREE.DepthTexture(stageW, stageH);
+  composer = new EffectComposer(renderer, rt);
+  // each ping-pong buffer needs its own depth texture, or the outline pass samples what it writes
+  composer.renderTarget2.depthTexture = new THREE.DepthTexture(stageW, stageH);
   composer.addPass(new RenderPass(scene, camera));
+  composer.addPass(new StylePass());
   if (q.post >= 3) {
     gtaoPass = new GTAOPass(scene, camera, stageW, stageH);
     gtaoPass.blendIntensity = 0.8;
@@ -1158,8 +1227,10 @@ function setupPost() {
     composer.addPass(bloomPass);
   }
   composer.addPass(new OutputPass());
-  smaaPass = new SMAAPass(stageW, stageH);
-  composer.addPass(smaaPass);
+  if (q.post) {
+    smaaPass = new SMAAPass(stageW, stageH);
+    composer.addPass(smaaPass);
+  }
 }
 function setRes() {
   var pr = basePR * rs;
