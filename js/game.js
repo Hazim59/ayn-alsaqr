@@ -180,18 +180,18 @@ var QUAL = {
 };
 var ENVS = {
   day: {
-    elev: 46,
+    elev: 50,
     azim: 150,
-    turb: 2.2,
-    ray: 1.1,
-    mie: 0.004,
-    mieG: 0.8,
-    exp: 0.62,
-    sunI: 2.9,
-    sunCol: 0xfff1dc,
-    hemiI: 1.15,
-    fog: 0xc6d6e4,
-    fogD: 0.00045,
+    turb: 1.1,
+    ray: 2.4,
+    mie: 0.0025,
+    mieG: 0.78,
+    exp: 0.6,
+    sunI: 3.0,
+    sunCol: 0xfff0d2,
+    hemiI: 1.3,
+    fog: 0xbfe0ff,
+    fogD: 0.00038,
     lit: 0.0
   },
   dusk: {
@@ -1057,7 +1057,7 @@ sun.castShadow = true;
 })();
 scene.add(sun);
 scene.add(sun.target);
-var hemi = new THREE.HemisphereLight(0xcfe0ff, 0x6b5a45, 0.55);
+var hemi = new THREE.HemisphereLight(0x9fcbff, 0x8a7a5a, 0.55);
 scene.add(hemi);
 var sunDir = new THREE.Vector3(),
   curEnv = ENVS.day;
@@ -1153,7 +1153,7 @@ var STYLE_FS = [
   '  if (raw > 0.99995) edge = 0.0;',
   '  vec3 col = c.rgb;',
   '  float l = dot(col, vec3(0.2126, 0.7152, 0.0722));',
-  '  col = max(mix(vec3(l), col, 1.3), 0.0);',
+  '  col = max(mix(vec3(l), col, 1.18), 0.0);',
   '  float lq = floor(l * 6.0 + 0.5) / 6.0;',
   '  col *= mix(1.0, (lq + 0.04) / (l + 0.04), 0.3);',
   '  col = mix(col, col * vec3(0.16, 0.11, 0.08), edge * 0.9);',
@@ -1351,26 +1351,31 @@ function sharedGeo() {
   G.ring = new THREE.CylinderGeometry(1, 1, 1, 18, 1, true);
 }
 var MATS = {};
+// two-step light ramp for cartoon grass
+var TOON_G = (function () {
+  var t = new THREE.DataTexture(new Uint8Array([170, 170, 170, 255, 255, 255, 255, 255]), 2, 1);
+  t.minFilter = t.magFilter = THREE.NearestFilter;
+  t.needsUpdate = true;
+  return t;
+})();
 function sharedMats() {
   MATS.stone = new THREE.MeshStandardMaterial({
     map: TX.stone,
     normalMap: TX.stoneN,
-    normalScale: new THREE.Vector2(1.3, 1.3),
+    normalScale: new THREE.Vector2(0.35, 0.35),
     vertexColors: true,
-    roughness: 0.93
+    roughness: 0.9,
+    color: 0xfff6ea
   });
   MATS.mud = new THREE.MeshStandardMaterial({
     map: TX.mud,
-    normalMap: TX.mudN,
     vertexColors: true,
-    roughness: 0.96,
-    color: 0xd9c8b4
+    roughness: 0.92,
+    color: 0xf2b27a
   });
   MATS.trim = new THREE.MeshStandardMaterial({
-    map: TX.plaster,
-    normalMap: TX.plasterN,
     vertexColors: true,
-    roughness: 0.82
+    roughness: 0.75
   });
   MATS.glass = new THREE.MeshStandardMaterial({ color: 0x17120e, roughness: 0.3, metalness: 0.2 });
   MATS.glassLit = new THREE.MeshStandardMaterial({
@@ -1388,22 +1393,11 @@ function sharedMats() {
     roughness: 0.6,
     metalness: 0.15
   });
-  MATS.terrain = new THREE.MeshStandardMaterial({
-    vertexColors: true,
-    map: TX.ground,
-    normalMap: TX.groundN,
-    normalScale: new THREE.Vector2(1.1, 1.1),
-    roughness: 0.97
-  });
+  MATS.terrain = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95 });
   MATS.asphalt = new THREE.MeshStandardMaterial({ map: TX.asphalt, roughness: 0.92 });
   MATS.tree = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9 });
-  MATS.grass = new THREE.MeshStandardMaterial({
-    map: TX.grass,
-    alphaTest: 0.45,
-    side: THREE.DoubleSide,
-    roughness: 0.95,
-    color: 0xb4c48c
-  });
+  // no depth writes: tufts stay out of the ink-outline pass and read as soft texture
+  MATS.grass = new THREE.MeshToonMaterial({ vertexColors: true, depthWrite: false, gradientMap: TOON_G });
   MATS.mist = new THREE.SpriteMaterial({
     map: TX.puff,
     transparent: true,
@@ -1454,14 +1448,14 @@ function buildTerrain(world) {
   var C = function (h) {
     return new THREE.Color(h);
   };
-  var cRock = C(0x84755f),
-    cRock2 = C(0x9a9086),
-    cGreen = C(0x62843f),
-    cOlive = C(0x86954a),
-    cTan = C(0xb39a66),
-    cRiser = C(0x857158),
-    cDry = C(0xa58f68),
-    cSoil = C(0x8d7350);
+  var cRock = C(0x8a6e4e),
+    cRock2 = C(0xa89478),
+    cGreen = C(0x4a9e34),
+    cOlive = C(0x74b03e),
+    cTan = C(0xc4ac52),
+    cRiser = C(0xa8784c),
+    cDry = C(0xc9a86c),
+    cSoil = C(0x5f9a36);
   for (var i = 0; i < pos.count; i++) {
     var x = pos.getX(i),
       z = pos.getZ(i),
@@ -1478,9 +1472,11 @@ function buildTerrain(world) {
       cc.copy(fr < 0.14 ? cRiser : [cGreen, cOlive, cTan, cGreen, cSoil][((id % 5) + 5) % 5]);
       if (sl > 0.6) cc.lerp(cRock, Math.min(1, (sl - 0.6) / 0.35));
     }
-    cols[i * 3] = cc.r;
-    cols[i * 3 + 1] = cc.g;
-    cols[i * 3 + 2] = cc.b;
+    // broad, soft light/dark patches instead of texture noise
+    var pv = 1 + 0.07 * Math.sin(x * 0.021 + z * 0.017) + 0.05 * Math.sin(x * 0.053 - z * 0.041);
+    cols[i * 3] = cc.r * pv;
+    cols[i * 3 + 1] = cc.g * pv;
+    cols[i * 3 + 2] = cc.b * pv;
   }
   g.setAttribute('color', new THREE.BufferAttribute(cols, 3));
   g.computeVertexNormals();
@@ -1748,15 +1744,15 @@ function buildVegetation(r, world, blds) {
     trunk = new THREE.CylinderGeometry(0.12, 0.2, 1.6, 6);
   trunk.translate(0, 0.8, 0);
   var tb = new Bucket();
-  tb.add(trunk, null, 0, 0, 0, 0, 1, 1, 1, 0x4a3524);
+  tb.add(trunk, null, 0, 0, 0, 0, 1, 1, 1, 0x7a5232);
   [
-    [0, 1.9, 0, 1.05],
-    [0.45, 1.5, 0.2, 0.75],
-    [-0.4, 1.6, -0.2, 0.8],
-    [0.1, 2.6, 0.05, 0.7]
+    [0, 2.0, 0, 1.25],
+    [0.62, 1.7, 0.25, 0.9],
+    [-0.58, 1.75, -0.22, 0.95],
+    [0.05, 2.85, 0.05, 0.95]
   ].forEach(function (b, i) {
-    var s = new THREE.IcosahedronGeometry(b[3], 1);
-    tb.add(s, null, b[0], b[1], b[2], 0, 1, 0.9, 1, [0x2c4426, 0x34502b, 0x2a3f22, 0x3a5730][i]);
+    var s = new THREE.IcosahedronGeometry(b[3], 2);
+    tb.add(s, null, b[0], b[1], b[2], 0, 1, 0.92, 1, [0x3f9a35, 0x4aa83a, 0x37902f, 0x6cc447][i]);
     s.dispose();
   });
   var tg = mergeGeometries(tb.g, false);
@@ -1792,19 +1788,25 @@ function buildVegetation(r, world, blds) {
   trees.receiveShadow = true;
   trees.userData.own = true;
   world.add(trees);
-  // grass clumps on the terraces where targets are
-  var p1 = new THREE.PlaneGeometry(1.4, 0.8);
-  p1.translate(0, 0.4, 0);
+  // cartoon grass tufts: a fan of short blades, darker at the root
+  var p1 = new THREE.ConeGeometry(0.07, 0.55, 3, 1);
+  p1.translate(0, 0.27, 0);
   var gb = new Bucket();
-  [0, 1.05, 2.1].forEach(function (ang) {
-    gb.add(p1, null, 0, 0, 0, ang, 1, 1, 1, 0xffffff);
+  [
+    [0, 0, 0, 1, 0x4f9a30],
+    [0.12, 0.05, 0.35, 0.85, 0x63ad38],
+    [-0.12, -0.04, -0.35, 0.9, 0x5aa334],
+    [0.04, -0.12, 0.25, 0.75, 0x74bd40],
+    [-0.05, 0.12, -0.2, 0.8, 0x4a922c]
+  ].forEach(function (b) {
+    gb.add(p1, null, b[0], 0, b[1], 0, 1, b[3], 1, b[4], b[2]);
   });
   var gg = mergeGeometries(gb.g, false);
   gb.g.forEach(function (g) {
     g.dispose();
   });
   p1.dispose();
-  var GN = 4200,
+  var GN = 3000,
     grass = new THREE.InstancedMesh(gg, MATS.grass, GN),
     gp = 0;
   for (var k = 0; k < GN * 3 && gp < GN; k++) {
@@ -1885,7 +1887,7 @@ function buildCity(n, r, world, blds) {
         1,
         1,
         1,
-        [0xffffff, 0xf3e7d8, 0xd9d3cd, 0xcfe0ea][Math.floor(r() * 4)]
+        [0xe8c896, 0xd9906a, 0xf2e2c4, 0x8fc4c0, 0xe0b060, 0xc7a8d8][Math.floor(r() * 6)]
       );
       g.dispose();
       if (!L.far) {
@@ -1913,16 +1915,24 @@ function buildCity(n, r, world, blds) {
 
 /* ---------- people: jointed bodies with smooth limbs, Saudi dress, walk and idle animation ---------- */
 var PM = {};
+// cel shading for people: three clear light steps instead of smooth gradients
+var TOON = (function () {
+  var t = new THREE.DataTexture(
+    new Uint8Array([120, 120, 120, 255, 190, 190, 190, 255, 255, 255, 255, 255]),
+    3,
+    1
+  );
+  t.minFilter = t.magFilter = THREE.NearestFilter;
+  t.needsUpdate = true;
+  return t;
+})();
+function toon(o) {
+  o.gradientMap = TOON;
+  return new THREE.MeshToonMaterial(o);
+}
 function pmat(hex, rough, metal) {
   var k = hex + '_' + (rough || 0.8) + '_' + (metal || 0);
-  return (
-    PM[k] ||
-    (PM[k] = new THREE.MeshStandardMaterial({
-      color: hex,
-      roughness: rough == null ? 0.8 : rough,
-      metalness: metal || 0
-    }))
-  );
+  return PM[k] || (PM[k] = toon({ color: hex }));
 }
 var shemTex = (function () {
   var c = mk(64, 64),
@@ -1976,15 +1986,12 @@ var camoTex = (function () {
   t.colorSpace = THREE.SRGBColorSpace;
   return t;
 })();
-var MP_SHEM = new THREE.MeshStandardMaterial({ map: shemTex, roughness: 0.9, side: THREE.DoubleSide });
+var MP_SHEM = toon({ map: shemTex, side: THREE.DoubleSide });
 var CLOTH2 = {};
 function cloth2(hex) {
-  return (
-    CLOTH2[hex] ||
-    (CLOTH2[hex] = new THREE.MeshStandardMaterial({ color: hex, roughness: 0.9, side: THREE.DoubleSide }))
-  );
+  return CLOTH2[hex] || (CLOTH2[hex] = toon({ color: hex, side: THREE.DoubleSide }));
 }
-var MP_CAMO = new THREE.MeshStandardMaterial({ map: camoTex, roughness: 0.95, envMapIntensity: 0.4 });
+var MP_CAMO = toon({ map: camoTex });
 var PG = {
   thigh: new THREE.CapsuleGeometry(0.078, 0.34, 4, 10),
   shin: new THREE.CapsuleGeometry(0.064, 0.36, 4, 10),
@@ -2081,11 +2088,9 @@ var foldTex = (function () {
 })();
 var ROBEM = {};
 function robeMat(hex) {
-  return (
-    ROBEM[hex] || (ROBEM[hex] = new THREE.MeshStandardMaterial({ color: hex, map: foldTex, roughness: 0.86 }))
-  );
+  return ROBEM[hex] || (ROBEM[hex] = toon({ color: hex, map: foldTex }));
 }
-var MP_HEAD = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.62 });
+var MP_HEAD = toon({ vertexColors: true });
 var PG2 = {
   // torso from hips (y=-0.05) to the base of the neck, chest a little wider than the waist
   torso: new THREE.LatheGeometry(
@@ -5259,11 +5264,13 @@ function txt(s, x, y, size, col, al) {
   ctx.font = '700 ' + size + 'px Tajawal, "Segoe UI", Tahoma, sans-serif';
   ctx.textAlign = al || 'center';
   ctx.textBaseline = 'middle';
-  ctx.shadowColor = 'rgba(0,0,0,.85)';
-  ctx.shadowBlur = 3;
+  // dark outline keeps HUD text readable over the bright, colourful scenery
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = Math.max(2.5, size * 0.22);
+  ctx.strokeStyle = 'rgba(20,12,8,.85)';
+  ctx.strokeText(s, x, y);
   ctx.fillStyle = col;
   ctx.fillText(s, x, y);
-  ctx.shadowBlur = 0;
 }
 function nearest() {
   var best = null,
