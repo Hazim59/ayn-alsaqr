@@ -2145,6 +2145,115 @@ function robeGeo(long) {
 PG2.robe = robeGeo(false);
 PG2.abaya = robeGeo(true);
 
+/* bisht: open-front black cloak with gold zari trim, worn over the thobe */
+var BISHT_OPEN = 0.42; // half-angle of the open front, radians
+var BISHT_PROF = [
+  [0.07, 1.6],
+  [0.17, 1.585],
+  [0.235, 1.53],
+  [0.258, 1.44],
+  [0.262, 1.2],
+  [0.29, 0.8],
+  [0.335, 0.3],
+  [0.352, 0.08]
+];
+function bishtLathe(prof, a0, len, grow) {
+  var g = new THREE.LatheGeometry(
+    prof.map(function (p) {
+      return new THREE.Vector2(p[0] + (grow || 0), p[1]);
+    }),
+    40,
+    a0,
+    len
+  );
+  g.scale(1, 1, 0.78);
+  return g;
+}
+PG2.bisht = bishtLathe(BISHT_PROF.slice().reverse(), BISHT_OPEN, Math.PI * 2 - BISHT_OPEN * 2);
+// gold bands down both front edges, around the hem and as a V yoke across the back
+PG2.bishtEdge = (function () {
+  var p = BISHT_PROF.slice().reverse(),
+    w = 0.13;
+  var a = bishtLathe(p, BISHT_OPEN, w, 0.004),
+    b = bishtLathe(p, Math.PI * 2 - BISHT_OPEN - w, w, 0.004);
+  var hem = bishtLathe(
+    [
+      [0.35, 0.075],
+      [0.338, 0.2]
+    ],
+    BISHT_OPEN,
+    Math.PI * 2 - BISHT_OPEN * 2,
+    0.004
+  );
+  var g = mergeGeometries([a, b, hem], false);
+  [a, b, hem].forEach(function (x) {
+    x.dispose();
+  });
+  return g;
+})();
+PG2.sleeveB = new THREE.CylinderGeometry(0.072, 0.135, 0.46, 18, 1, true);
+PG2.sleeveGold = new THREE.TorusGeometry(0.135, 0.011, 6, 22);
+PG2.tassel = new THREE.ConeGeometry(0.018, 0.07, 8);
+PG2.shemBack = (function () {
+  var sh = new THREE.Shape();
+  sh.moveTo(-0.19, 0.0);
+  sh.quadraticCurveTo(0, 0.05, 0.19, 0.0);
+  sh.lineTo(0, -0.27);
+  sh.closePath();
+  var g = new THREE.ShapeGeometry(sh, 6),
+    uv = g.attributes.uv;
+  for (var i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * 2.5 + 0.5, uv.getY(i) * 2.5 + 0.5);
+  return g;
+})();
+PG2.yoke = (function () {
+  var sh = new THREE.Shape();
+  sh.moveTo(-0.22, 0.06);
+  sh.lineTo(0.22, 0.06);
+  sh.lineTo(0.02, -0.2);
+  sh.lineTo(-0.02, -0.2);
+  sh.closePath();
+  var hole = new THREE.Path();
+  hole.moveTo(-0.17, 0.06);
+  hole.lineTo(0.17, 0.06);
+  hole.lineTo(0, -0.15);
+  hole.closePath();
+  sh.holes.push(hole);
+  return new THREE.ShapeGeometry(sh);
+})();
+var BISHT_BLACK = toon({ color: 0x1c1714, map: foldTex, side: THREE.DoubleSide });
+var BISHT_GOLD = toon({ color: 0xc8952e, side: THREE.DoubleSide });
+function addBisht(root, u, hmat) {
+  u.bisht = addM(root, PG2.bisht, BISHT_BLACK, 0, 0, 0);
+  addM(root, PG2.bishtEdge, BISHT_GOLD, 0, 0, 0);
+  var yk = addM(root, PG2.yoke, BISHT_GOLD, 0, 1.5, -0.205);
+  yk.rotation.set(-0.1, Math.PI, 0);
+  if (hmat) {
+    var sb = addM(root, PG2.shemBack, hmat, 0, 1.6, -0.2);
+    sb.rotation.set(-0.16, Math.PI, 0);
+  }
+  addM(root, G.box, BISHT_GOLD, 0, 0.78, -0.252, 0.014, 1.38, 0.006);
+  // tassels hanging from the front edges at chest height
+  [-1, 1].forEach(function (s2) {
+    var ang = BISHT_OPEN + 0.06,
+      x = Math.sin(ang) * 0.27 * s2,
+      z = Math.cos(ang) * 0.27 * 0.78;
+    for (var t = 0; t < 2; t++) {
+      addM(root, G.box, BISHT_GOLD, x, 1.18 - t * 0.09, z + 0.01, 0.006, 0.14, 0.006);
+      var tc = addM(root, PG2.tassel, BISHT_GOLD, x, 1.1 - t * 0.09, z + 0.01);
+      tc.rotation.x = Math.PI;
+    }
+  });
+  // wide bisht sleeves over the upper arms, gold at the opening
+  [u.armL, u.armR].forEach(function (a) {
+    addM(a.p, PG2.sleeveB, BISHT_BLACK, 0, -0.27, 0);
+    addM(a.p, PG2.shoulder, BISHT_BLACK, 0, -0.01, 0, 1.25, 1.1, 1.25);
+    var ring = addM(a.p, PG2.sleeveGold, BISHT_GOLD, 0, -0.498, 0);
+    ring.rotation.x = Math.PI / 2;
+  });
+  u.armL.p.rotation.z = -0.16;
+  u.armR.p.rotation.z = 0.16;
+}
+
 // one merged, vertex-coloured head per look (face, ears, beard, hair); cached and shared
 var HEADS = {};
 function headGeo(skin, hair, beard, ears, hairCap, female) {
@@ -2209,7 +2318,7 @@ function mkPerson(kind, r, o) {
         ? pmat(o.shirt, 0.8)
         : pmat([0x2f6fb8, 0xd8ccb0, 0x4f8a5a, 0xa8743f, 0xcfcfcf][Math.floor(r() * 5)], 0.8);
   var pants = armed ? MP_CAMO : pmat([0x2b3342, 0x5a5148, 0x3a3a3a][Math.floor(r() * 3)], 0.88),
-    shoe = robe ? pmat(0x5a3a22, 0.7) : pmat(0x1d1713, 0.65),
+    shoe = robe && !o.bisht ? pmat(0x5a3a22, 0.7) : pmat(0x141212, 0.5),
     glove = pmat(0x24221e, 0.8);
   var root = new THREE.Group();
   g.add(root);
@@ -2251,7 +2360,7 @@ function mkPerson(kind, r, o) {
   var hat =
     o.hat || (armed ? 'helmet' : robe ? (r() < 0.55 ? 'shemagh' : 'ghutra') : r() < 0.4 ? 'cap' : 'none');
   var br = r(),
-    beard = female ? 0 : br < 0.22 ? 0 : br < 0.42 ? 1 : br < 0.75 ? 2 : 3;
+    beard = female ? 0 : o.beard != null ? o.beard : br < 0.22 ? 0 : br < 0.42 ? 1 : br < 0.75 ? 2 : 3;
   var covered = hat === 'shemagh' || hat === 'ghutra' || hat === 'shayla' || hat === 'helmet';
   var hm = addM(
     head,
@@ -2300,11 +2409,13 @@ function mkPerson(kind, r, o) {
     var hmat = hat === 'ghutra' ? cloth2(0xf6f4ee) : MP_SHEM;
     addM(head, PG.dome, hmat, 0, 0.05, -0.008, 0.138, 0.128, 0.148);
     addM(head, PG.drape, hmat, 0, -0.152, -0.018, 1.04, 1, 1.02);
-    addM(torso, PG.backDrape, hmat, 0, 0.42, -0.045, 1.08, 1, 1.05);
+    if (!o.bisht) addM(torso, PG.backDrape, hmat, 0, 0.42, -0.045, 1.08, 1, 1.05);
     // the two front ends falling over the chest
     [-1, 1].forEach(function (s) {
-      var f = addM(torso, PG2.flap, hmat, s * 0.118, 0.45, 0.115);
-      f.rotation.set(-0.12, 0, s * 0.1);
+      var f = o.bisht
+        ? addM(torso, PG2.flap, hmat, s * 0.15, 0.4, 0.17, 1.15, 1.25, 1)
+        : addM(torso, PG2.flap, hmat, s * 0.118, 0.45, 0.115);
+      f.rotation.set(o.bisht ? -0.05 : -0.12, 0, s * (o.bisht ? 0.16 : 0.1));
     });
     var agal = pmat(0x111111, 0.55);
     [0.098, 0.12].forEach(function (y) {
@@ -2325,6 +2436,7 @@ function mkPerson(kind, r, o) {
     addM(head, PG.dome, capM, 0, 0.032, -0.006, 0.124, 0.104, 0.13);
     addM(head, G.box, capM, 0, 0.035, 0.125, 0.18, 0.014, 0.1);
   }
+  if (o.bisht && robe && !female) addBisht(root, u, hat === 'shemagh' || hat === 'ghutra' ? hmat : null);
   var blob = new THREE.Mesh(PG.blob, MATS.blob);
   blob.rotation.x = -Math.PI / 2;
   u.blob = blob;
