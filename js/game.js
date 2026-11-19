@@ -45,9 +45,12 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
+import { Pass, FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 
 const SH = window.SH;
 SH.progress(0.15);
@@ -179,18 +182,18 @@ var QUAL = {
 };
 var ENVS = {
   day: {
-    elev: 46,
+    elev: 50,
     azim: 150,
-    turb: 2.2,
-    ray: 1.1,
-    mie: 0.004,
-    mieG: 0.8,
-    exp: 0.62,
-    sunI: 2.9,
-    sunCol: 0xfff1dc,
-    hemiI: 1.15,
-    fog: 0xc6d6e4,
-    fogD: 0.00045,
+    turb: 1.1,
+    ray: 2.4,
+    mie: 0.0025,
+    mieG: 0.78,
+    exp: 0.6,
+    sunI: 3.0,
+    sunCol: 0xfff0d2,
+    hemiI: 1.3,
+    fog: 0xbfe0ff,
+    fogD: 0.00038,
     lit: 0.0
   },
   dusk: {
@@ -832,7 +835,7 @@ function makeTextures() {
     sx = sc.getContext('2d'),
     hgt = new Float32Array(S * S),
     r = rng(43);
-  sx.fillStyle = '#5c544b';
+  sx.fillStyle = '#9a7e5e';
   sx.fillRect(0, 0, S, S);
   var hc = mk(S, S),
     hx = hc.getContext('2d');
@@ -843,10 +846,16 @@ function makeTextures() {
       rowH = 24 + Math.floor(r() * 4);
     while (x0 < S) {
       var bw = 38 + r() * 70,
-        c = 108 + Math.floor(r() * 60),
+        c = 176 + Math.floor(r() * 44),
         warm = r();
       var col =
-        'rgb(' + (c + (warm < 0.3 ? 16 : 0)) + ',' + (c - 6) + ',' + (c - 18 - (warm > 0.75 ? 12 : 0)) + ')';
+        'rgb(' +
+        (c + 14 + (warm < 0.3 ? 12 : 0)) +
+        ',' +
+        (c - 4) +
+        ',' +
+        (c - 34 - (warm > 0.75 ? 14 : 0)) +
+        ')';
       [0, S].forEach(function (wx) {
         sx.fillStyle = col;
         sx.beginPath();
@@ -865,7 +874,7 @@ function makeTextures() {
   for (i = 0; i < S * S; i++) hgt[i] = (hd[i * 4] / 255) * 0.8 + n3[i] * 0.2;
   var sd = sx.getImageData(0, 0, S, S);
   for (i = 0; i < S * S; i++) {
-    var m = 0.82 + n3[i] * 0.3;
+    var m = 0.93 + n3[i] * 0.12;
     sd.data[i * 4] *= m;
     sd.data[i * 4 + 1] *= m;
     sd.data[i * 4 + 2] *= m;
@@ -1056,7 +1065,7 @@ sun.castShadow = true;
 })();
 scene.add(sun);
 scene.add(sun.target);
-var hemi = new THREE.HemisphereLight(0xcfe0ff, 0x6b5a45, 0.55);
+var hemi = new THREE.HemisphereLight(0x9fcbff, 0x8a7a5a, 0.55);
 scene.add(hemi);
 var sunDir = new THREE.Vector3(),
   curEnv = ENVS.day;
@@ -1134,6 +1143,70 @@ var stageW = 640,
   stageH = 360,
   basePR = 1,
   rs = 1;
+/* stylised look: ink outlines from depth edges, richer colour and soft cel steps.
+   Runs right after the scene render, at every quality level. */
+var STYLE_FS = [
+  'uniform sampler2D tDiffuse; uniform sampler2D tDepth; uniform vec2 res; uniform float near; uniform float far; uniform float px;',
+  'varying vec2 vUv;',
+  'float lin(float d){ float z = d * 2.0 - 1.0; return (2.0 * near * far) / (far + near - z * (far - near)); }',
+  'float inv(vec2 uv){ return 1.0 / lin(texture2D(tDepth, uv).r); }',
+  'void main(){',
+  '  vec4 c = texture2D(tDiffuse, vUv);',
+  '  float raw = texture2D(tDepth, vUv).r;',
+  '  vec2 o = vec2(px) / res;',
+  '  float w = inv(vUv);',
+  '  float lap = inv(vUv + vec2(o.x, 0.0)) + inv(vUv - vec2(o.x, 0.0)) + inv(vUv + vec2(0.0, o.y)) + inv(vUv - vec2(0.0, o.y)) - 4.0 * w;',
+  '  float d = 1.0 / w;',
+  '  float edge = smoothstep(0.012, 0.045, abs(lap) / w) * (1.0 - smoothstep(380.0, 1100.0, d));',
+  '  if (raw > 0.99995) edge = 0.0;',
+  '  vec3 col = c.rgb;',
+  '  float l = dot(col, vec3(0.2126, 0.7152, 0.0722));',
+  '  col = max(mix(vec3(l), col, 1.18), 0.0);',
+  '  float lq = floor(l * 6.0 + 0.5) / 6.0;',
+  '  col *= mix(1.0, (lq + 0.04) / (l + 0.04), 0.3);',
+  '  col = mix(col, col * vec3(0.16, 0.11, 0.08), edge * 0.9);',
+  '  gl_FragColor = vec4(col, c.a);',
+  '}'
+].join('\n');
+class StylePass extends Pass {
+  constructor() {
+    super();
+    this.needsSwap = true;
+    this.mat = new THREE.ShaderMaterial({
+      uniforms: {
+        tDiffuse: { value: null },
+        tDepth: { value: null },
+        res: { value: new THREE.Vector2(1, 1) },
+        near: { value: camera.near },
+        far: { value: camera.far },
+        px: { value: 1 }
+      },
+      vertexShader:
+        'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: STYLE_FS,
+      depthTest: false,
+      depthWrite: false
+    });
+    this.fsQuad = new FullScreenQuad(this.mat);
+  }
+  setSize(w, h) {
+    this.mat.uniforms.res.value.set(w, h);
+    this.mat.uniforms.px.value = Math.max(1, Math.round(h / 520));
+  }
+  render(renderer, writeBuffer, readBuffer) {
+    var u = this.mat.uniforms;
+    u.tDiffuse.value = readBuffer.texture;
+    u.tDepth.value = readBuffer.depthTexture;
+    u.near.value = camera.near;
+    u.far.value = camera.far;
+    renderer.setRenderTarget(this.renderToScreen ? null : writeBuffer);
+    this.fsQuad.render(renderer);
+  }
+  dispose() {
+    this.mat.dispose();
+    this.fsQuad.dispose();
+  }
+}
 function setupPost() {
   var q = QUAL[save.q];
   if (composer) {
@@ -1145,9 +1218,13 @@ function setupPost() {
     composer = null;
   }
   bloomPass = gtaoPass = smaaPass = null;
-  if (!q.post) return;
-  composer = new EffectComposer(renderer);
+  var rt = new THREE.WebGLRenderTarget(stageW, stageH, { type: THREE.HalfFloatType });
+  rt.depthTexture = new THREE.DepthTexture(stageW, stageH);
+  composer = new EffectComposer(renderer, rt);
+  // each ping-pong buffer needs its own depth texture, or the outline pass samples what it writes
+  composer.renderTarget2.depthTexture = new THREE.DepthTexture(stageW, stageH);
   composer.addPass(new RenderPass(scene, camera));
+  composer.addPass(new StylePass());
   if (q.post >= 3) {
     gtaoPass = new GTAOPass(scene, camera, stageW, stageH);
     gtaoPass.blendIntensity = 0.8;
@@ -1158,8 +1235,10 @@ function setupPost() {
     composer.addPass(bloomPass);
   }
   composer.addPass(new OutputPass());
-  smaaPass = new SMAAPass(stageW, stageH);
-  composer.addPass(smaaPass);
+  if (q.post) {
+    smaaPass = new SMAAPass(stageW, stageH);
+    composer.addPass(smaaPass);
+  }
 }
 function setRes() {
   var pr = basePR * rs;
@@ -1280,26 +1359,31 @@ function sharedGeo() {
   G.ring = new THREE.CylinderGeometry(1, 1, 1, 18, 1, true);
 }
 var MATS = {};
+// two-step light ramp for cartoon grass
+var TOON_G = (function () {
+  var t = new THREE.DataTexture(new Uint8Array([170, 170, 170, 255, 255, 255, 255, 255]), 2, 1);
+  t.minFilter = t.magFilter = THREE.NearestFilter;
+  t.needsUpdate = true;
+  return t;
+})();
 function sharedMats() {
   MATS.stone = new THREE.MeshStandardMaterial({
     map: TX.stone,
     normalMap: TX.stoneN,
-    normalScale: new THREE.Vector2(1.3, 1.3),
+    normalScale: new THREE.Vector2(0.3, 0.3),
     vertexColors: true,
-    roughness: 0.93
+    roughness: 0.9
   });
   MATS.mud = new THREE.MeshStandardMaterial({
     map: TX.mud,
-    normalMap: TX.mudN,
     vertexColors: true,
-    roughness: 0.96,
-    color: 0xd9c8b4
+    roughness: 0.92,
+    color: 0xf2b27a
   });
   MATS.trim = new THREE.MeshStandardMaterial({
-    map: TX.plaster,
-    normalMap: TX.plasterN,
     vertexColors: true,
-    roughness: 0.82
+    roughness: 0.8,
+    color: 0xf6eedf
   });
   MATS.glass = new THREE.MeshStandardMaterial({ color: 0x17120e, roughness: 0.3, metalness: 0.2 });
   MATS.glassLit = new THREE.MeshStandardMaterial({
@@ -1317,22 +1401,11 @@ function sharedMats() {
     roughness: 0.6,
     metalness: 0.15
   });
-  MATS.terrain = new THREE.MeshStandardMaterial({
-    vertexColors: true,
-    map: TX.ground,
-    normalMap: TX.groundN,
-    normalScale: new THREE.Vector2(1.1, 1.1),
-    roughness: 0.97
-  });
+  MATS.terrain = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95 });
   MATS.asphalt = new THREE.MeshStandardMaterial({ map: TX.asphalt, roughness: 0.92 });
   MATS.tree = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9 });
-  MATS.grass = new THREE.MeshStandardMaterial({
-    map: TX.grass,
-    alphaTest: 0.45,
-    side: THREE.DoubleSide,
-    roughness: 0.95,
-    color: 0xb4c48c
-  });
+  // no depth writes: tufts stay out of the ink-outline pass and read as soft texture
+  MATS.grass = new THREE.MeshToonMaterial({ vertexColors: true, depthWrite: false, gradientMap: TOON_G });
   MATS.mist = new THREE.SpriteMaterial({
     map: TX.puff,
     transparent: true,
@@ -1383,14 +1456,14 @@ function buildTerrain(world) {
   var C = function (h) {
     return new THREE.Color(h);
   };
-  var cRock = C(0x84755f),
-    cRock2 = C(0x9a9086),
-    cGreen = C(0x62843f),
-    cOlive = C(0x86954a),
-    cTan = C(0xb39a66),
-    cRiser = C(0x857158),
-    cDry = C(0xa58f68),
-    cSoil = C(0x8d7350);
+  var cRock = C(0x8a6e4e),
+    cRock2 = C(0xa89478),
+    cGreen = C(0x4a9e34),
+    cOlive = C(0x74b03e),
+    cTan = C(0xc4ac52),
+    cRiser = C(0xa8784c),
+    cDry = C(0xc9a86c),
+    cSoil = C(0x5f9a36);
   for (var i = 0; i < pos.count; i++) {
     var x = pos.getX(i),
       z = pos.getZ(i),
@@ -1407,9 +1480,11 @@ function buildTerrain(world) {
       cc.copy(fr < 0.14 ? cRiser : [cGreen, cOlive, cTan, cGreen, cSoil][((id % 5) + 5) % 5]);
       if (sl > 0.6) cc.lerp(cRock, Math.min(1, (sl - 0.6) / 0.35));
     }
-    cols[i * 3] = cc.r;
-    cols[i * 3 + 1] = cc.g;
-    cols[i * 3 + 2] = cc.b;
+    // broad, soft light/dark patches instead of texture noise
+    var pv = 1 + 0.07 * Math.sin(x * 0.021 + z * 0.017) + 0.05 * Math.sin(x * 0.053 - z * 0.041);
+    cols[i * 3] = cc.r * pv;
+    cols[i * 3 + 1] = cc.g * pv;
+    cols[i * 3 + 2] = cc.b * pv;
   }
   g.setAttribute('color', new THREE.BufferAttribute(cols, 3));
   g.computeVertexNormals();
@@ -1677,15 +1752,15 @@ function buildVegetation(r, world, blds) {
     trunk = new THREE.CylinderGeometry(0.12, 0.2, 1.6, 6);
   trunk.translate(0, 0.8, 0);
   var tb = new Bucket();
-  tb.add(trunk, null, 0, 0, 0, 0, 1, 1, 1, 0x4a3524);
+  tb.add(trunk, null, 0, 0, 0, 0, 1, 1, 1, 0x7a5232);
   [
-    [0, 1.9, 0, 1.05],
-    [0.45, 1.5, 0.2, 0.75],
-    [-0.4, 1.6, -0.2, 0.8],
-    [0.1, 2.6, 0.05, 0.7]
+    [0, 2.0, 0, 1.25],
+    [0.62, 1.7, 0.25, 0.9],
+    [-0.58, 1.75, -0.22, 0.95],
+    [0.05, 2.85, 0.05, 0.95]
   ].forEach(function (b, i) {
-    var s = new THREE.IcosahedronGeometry(b[3], 1);
-    tb.add(s, null, b[0], b[1], b[2], 0, 1, 0.9, 1, [0x2c4426, 0x34502b, 0x2a3f22, 0x3a5730][i]);
+    var s = new THREE.IcosahedronGeometry(b[3], 2);
+    tb.add(s, null, b[0], b[1], b[2], 0, 1, 0.92, 1, [0x3f9a35, 0x4aa83a, 0x37902f, 0x6cc447][i]);
     s.dispose();
   });
   var tg = mergeGeometries(tb.g, false);
@@ -1721,19 +1796,25 @@ function buildVegetation(r, world, blds) {
   trees.receiveShadow = true;
   trees.userData.own = true;
   world.add(trees);
-  // grass clumps on the terraces where targets are
-  var p1 = new THREE.PlaneGeometry(1.4, 0.8);
-  p1.translate(0, 0.4, 0);
+  // cartoon grass tufts: a fan of short blades, darker at the root
+  var p1 = new THREE.ConeGeometry(0.07, 0.55, 3, 1);
+  p1.translate(0, 0.27, 0);
   var gb = new Bucket();
-  [0, 1.05, 2.1].forEach(function (ang) {
-    gb.add(p1, null, 0, 0, 0, ang, 1, 1, 1, 0xffffff);
+  [
+    [0, 0, 0, 1, 0x4f9a30],
+    [0.12, 0.05, 0.35, 0.85, 0x63ad38],
+    [-0.12, -0.04, -0.35, 0.9, 0x5aa334],
+    [0.04, -0.12, 0.25, 0.75, 0x74bd40],
+    [-0.05, 0.12, -0.2, 0.8, 0x4a922c]
+  ].forEach(function (b) {
+    gb.add(p1, null, b[0], 0, b[1], 0, 1, b[3], 1, b[4], b[2]);
   });
   var gg = mergeGeometries(gb.g, false);
   gb.g.forEach(function (g) {
     g.dispose();
   });
   p1.dispose();
-  var GN = 4200,
+  var GN = 3000,
     grass = new THREE.InstancedMesh(gg, MATS.grass, GN),
     gp = 0;
   for (var k = 0; k < GN * 3 && gp < GN; k++) {
@@ -1814,7 +1895,7 @@ function buildCity(n, r, world, blds) {
         1,
         1,
         1,
-        [0xffffff, 0xf3e7d8, 0xd9d3cd, 0xcfe0ea][Math.floor(r() * 4)]
+        [0xe8c896, 0xd9906a, 0xf2e2c4, 0x8fc4c0, 0xe0b060, 0xc7a8d8][Math.floor(r() * 6)]
       );
       g.dispose();
       if (!L.far) {
@@ -1842,16 +1923,24 @@ function buildCity(n, r, world, blds) {
 
 /* ---------- people: jointed bodies with smooth limbs, Saudi dress, walk and idle animation ---------- */
 var PM = {};
+// cel shading for people: three clear light steps instead of smooth gradients
+var TOON = (function () {
+  var t = new THREE.DataTexture(
+    new Uint8Array([120, 120, 120, 255, 190, 190, 190, 255, 255, 255, 255, 255]),
+    3,
+    1
+  );
+  t.minFilter = t.magFilter = THREE.NearestFilter;
+  t.needsUpdate = true;
+  return t;
+})();
+function toon(o) {
+  o.gradientMap = TOON;
+  return new THREE.MeshToonMaterial(o);
+}
 function pmat(hex, rough, metal) {
   var k = hex + '_' + (rough || 0.8) + '_' + (metal || 0);
-  return (
-    PM[k] ||
-    (PM[k] = new THREE.MeshStandardMaterial({
-      color: hex,
-      roughness: rough == null ? 0.8 : rough,
-      metalness: metal || 0
-    }))
-  );
+  return PM[k] || (PM[k] = toon({ color: hex }));
 }
 var shemTex = (function () {
   var c = mk(64, 64),
@@ -1905,15 +1994,12 @@ var camoTex = (function () {
   t.colorSpace = THREE.SRGBColorSpace;
   return t;
 })();
-var MP_SHEM = new THREE.MeshStandardMaterial({ map: shemTex, roughness: 0.9, side: THREE.DoubleSide });
+var MP_SHEM = toon({ map: shemTex, side: THREE.DoubleSide });
 var CLOTH2 = {};
 function cloth2(hex) {
-  return (
-    CLOTH2[hex] ||
-    (CLOTH2[hex] = new THREE.MeshStandardMaterial({ color: hex, roughness: 0.9, side: THREE.DoubleSide }))
-  );
+  return CLOTH2[hex] || (CLOTH2[hex] = toon({ color: hex, side: THREE.DoubleSide }));
 }
-var MP_CAMO = new THREE.MeshStandardMaterial({ map: camoTex, roughness: 0.95, envMapIntensity: 0.4 });
+var MP_CAMO = toon({ map: camoTex });
 var PG = {
   thigh: new THREE.CapsuleGeometry(0.078, 0.34, 4, 10),
   shin: new THREE.CapsuleGeometry(0.064, 0.36, 4, 10),
@@ -1974,11 +2060,11 @@ function limb(parent, x, y, z, segA, segB, lenA, matA, matB, end, endMat) {
   var p = new THREE.Group();
   p.position.set(x, y, z);
   parent.add(p);
-  addM(p, segA, matA, 0, -lenA / 2, 0);
+  if (segA) addM(p, segA, matA, 0, -lenA / 2, 0);
   var j = new THREE.Group();
   j.position.set(0, -lenA, 0);
   p.add(j);
-  addM(j, segB, matB, 0, -lenA / 2 + 0.01, 0);
+  if (segB) addM(j, segB, matB, 0, -lenA / 2 + 0.01, 0);
   if (end) addM(j, end, endMat, 0, -lenA - 0.03, end === PG.boot ? 0.05 : 0);
   return { p: p, j: j };
 }
@@ -2010,11 +2096,9 @@ var foldTex = (function () {
 })();
 var ROBEM = {};
 function robeMat(hex) {
-  return (
-    ROBEM[hex] || (ROBEM[hex] = new THREE.MeshStandardMaterial({ color: hex, map: foldTex, roughness: 0.86 }))
-  );
+  return ROBEM[hex] || (ROBEM[hex] = toon({ color: hex, map: foldTex }));
 }
-var MP_HEAD = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.62 });
+var MP_HEAD = toon({ vertexColors: true });
 var PG2 = {
   // torso from hips (y=-0.05) to the base of the neck, chest a little wider than the waist
   torso: new THREE.LatheGeometry(
@@ -2069,20 +2153,131 @@ function robeGeo(long) {
 PG2.robe = robeGeo(false);
 PG2.abaya = robeGeo(true);
 
+/* bisht: open-front black cloak with gold zari trim, worn over the thobe */
+var BISHT_OPEN = 0.42; // half-angle of the open front, radians
+var BISHT_PROF = [
+  [0.07, 1.6],
+  [0.17, 1.585],
+  [0.235, 1.53],
+  [0.258, 1.44],
+  [0.262, 1.2],
+  [0.29, 0.8],
+  [0.335, 0.3],
+  [0.352, 0.08]
+];
+function bishtLathe(prof, a0, len, grow) {
+  var g = new THREE.LatheGeometry(
+    prof.map(function (p) {
+      return new THREE.Vector2(p[0] + (grow || 0), p[1]);
+    }),
+    40,
+    a0,
+    len
+  );
+  g.scale(1, 1, 0.78);
+  return g;
+}
+PG2.bisht = bishtLathe(BISHT_PROF.slice().reverse(), BISHT_OPEN, Math.PI * 2 - BISHT_OPEN * 2);
+// gold bands down both front edges, around the hem and as a V yoke across the back
+PG2.bishtEdge = (function () {
+  var p = BISHT_PROF.slice().reverse(),
+    w = 0.13;
+  var a = bishtLathe(p, BISHT_OPEN, w, 0.004),
+    b = bishtLathe(p, Math.PI * 2 - BISHT_OPEN - w, w, 0.004);
+  var hem = bishtLathe(
+    [
+      [0.35, 0.075],
+      [0.338, 0.2]
+    ],
+    BISHT_OPEN,
+    Math.PI * 2 - BISHT_OPEN * 2,
+    0.004
+  );
+  var g = mergeGeometries([a, b, hem], false);
+  [a, b, hem].forEach(function (x) {
+    x.dispose();
+  });
+  return g;
+})();
+PG2.sleeveB = new THREE.CylinderGeometry(0.072, 0.135, 0.46, 18, 1, true);
+PG2.sleeveGold = new THREE.TorusGeometry(0.135, 0.011, 6, 22);
+PG2.tassel = new THREE.ConeGeometry(0.018, 0.07, 8);
+PG2.shemBack = (function () {
+  var sh = new THREE.Shape();
+  sh.moveTo(-0.19, 0.0);
+  sh.quadraticCurveTo(0, 0.05, 0.19, 0.0);
+  sh.lineTo(0, -0.27);
+  sh.closePath();
+  var g = new THREE.ShapeGeometry(sh, 6),
+    uv = g.attributes.uv;
+  for (var i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * 2.5 + 0.5, uv.getY(i) * 2.5 + 0.5);
+  return g;
+})();
+PG2.yoke = (function () {
+  var sh = new THREE.Shape();
+  sh.moveTo(-0.22, 0.06);
+  sh.lineTo(0.22, 0.06);
+  sh.lineTo(0.02, -0.2);
+  sh.lineTo(-0.02, -0.2);
+  sh.closePath();
+  var hole = new THREE.Path();
+  hole.moveTo(-0.17, 0.06);
+  hole.lineTo(0.17, 0.06);
+  hole.lineTo(0, -0.15);
+  hole.closePath();
+  sh.holes.push(hole);
+  return new THREE.ShapeGeometry(sh);
+})();
+var BISHT_BLACK = toon({ color: 0x1c1714, map: foldTex, side: THREE.DoubleSide });
+var BISHT_GOLD = toon({ color: 0xc8952e, side: THREE.DoubleSide });
+function addBisht(root, u, hmat) {
+  u.bisht = addM(root, PG2.bisht, BISHT_BLACK, 0, 0, 0);
+  addM(root, PG2.bishtEdge, BISHT_GOLD, 0, 0, 0);
+  var yk = addM(root, PG2.yoke, BISHT_GOLD, 0, 1.5, -0.205);
+  yk.rotation.set(-0.1, Math.PI, 0);
+  if (hmat) {
+    var sb = addM(root, PG2.shemBack, hmat, 0, 1.6, -0.2);
+    sb.rotation.set(-0.16, Math.PI, 0);
+  }
+  addM(root, G.box, BISHT_GOLD, 0, 0.78, -0.252, 0.014, 1.38, 0.006);
+  // tassels hanging from the front edges at chest height
+  [-1, 1].forEach(function (s2) {
+    var ang = BISHT_OPEN + 0.06,
+      x = Math.sin(ang) * 0.27 * s2,
+      z = Math.cos(ang) * 0.27 * 0.78;
+    for (var t = 0; t < 2; t++) {
+      addM(root, G.box, BISHT_GOLD, x, 1.18 - t * 0.09, z + 0.01, 0.006, 0.14, 0.006);
+      var tc = addM(root, PG2.tassel, BISHT_GOLD, x, 1.1 - t * 0.09, z + 0.01);
+      tc.rotation.x = Math.PI;
+    }
+  });
+  // wide bisht sleeves over the upper arms, gold at the opening
+  [u.armL, u.armR].forEach(function (a) {
+    addM(a.p, PG2.sleeveB, BISHT_BLACK, 0, -0.27, 0);
+    addM(a.p, PG2.shoulder, BISHT_BLACK, 0, -0.01, 0, 1.25, 1.1, 1.25);
+    var ring = addM(a.p, PG2.sleeveGold, BISHT_GOLD, 0, -0.498, 0);
+    ring.rotation.x = Math.PI / 2;
+  });
+  u.armL.p.rotation.z = -0.16;
+  u.armR.p.rotation.z = 0.16;
+}
+
 // one merged, vertex-coloured head per look (face, ears, beard, hair); cached and shared
 var HEADS = {};
-function headGeo(skin, hair, beard, ears, hairCap, female) {
-  var key = [skin, hair, beard, ears, hairCap, female].join('|');
+function headGeo(skin, hair, beard, ears, hairCap, female, feat) {
+  var key = [skin, hair, beard, ears, hairCap, female, feat].join('|');
   if (HEADS[key]) return HEADS[key];
   var b = new Bucket(),
     sk = new THREE.Color(skin),
     shade = sk.clone().multiplyScalar(0.86).getHex(),
     lip = sk.clone().lerp(new THREE.Color(0x8a3a32), 0.45).getHex();
-  b.add(PG.head, null, 0, 0, 0, 0, 0.93, 1.06, 1, skin);
-  if (female) b.add(PG.head, null, 0, -0.04, 0.008, 0, 0.7, 0.62, 0.82, skin);
-  else b.add(PG.head, null, 0, -0.046, 0.012, 0, 0.74, 0.6, 0.76, skin);
-  b.add(PG.nose, null, 0, -0.012, 0.118, 0, 1, 1, 1, shade, Math.PI / 2);
-  if (ears)
+  if (!feat) {
+    b.add(PG.head, null, 0, 0, 0, 0, 0.93, 1.06, 1, skin);
+    if (female) b.add(PG.head, null, 0, -0.04, 0.008, 0, 0.7, 0.62, 0.82, skin);
+    else b.add(PG.head, null, 0, -0.046, 0.012, 0, 0.74, 0.6, 0.76, skin);
+    b.add(PG.nose, null, 0, -0.012, 0.118, 0, 1, 1, 1, shade, Math.PI / 2);
+  }
+  if (ears && !feat)
     [-1, 1].forEach(function (s) {
       b.add(PG.eye, null, s * 0.106, -0.004, 0.002, 0, 1.2, 2.4, 1.6, shade);
     });
@@ -2111,6 +2306,484 @@ function headGeo(skin, hair, beard, ears, hairCap, female) {
   return (HEADS[key] = g);
 }
 
+/* ---------- sculpted bodies: one continuous skinned mesh per body type ----------
+   The body is a signed distance field of smoothly blended capsules and ellipsoids
+   (rest pose, person space), meshed once with surface nets and skinned to the same
+   joint groups the walk / aim / fall animations already move. */
+var SK_REG = { skin: 0, top: 1, bottom: 2, shoes: 3, hands: 4 };
+var SK_BONES = ['root', 'torso', 'head', 'uaL', 'faL', 'uaR', 'faR', 'thL', 'shL', 'thR', 'shR'];
+var SK_HEAD = new THREE.Vector3(0, 1.68, 0),
+  SK_HS = 1.07; // head group position and scale in person space
+function skPrims(female) {
+  var P = [],
+    V = THREE.Vector3,
+    lm = female ? 0.88 : 1;
+  function cap(a, b, ra, rb, bone, reg, k, flat) {
+    P.push({ t: 0, a: a, b: b, ra: ra, rb: rb, bone: bone, reg: reg, k: k || 0.03, flat: flat });
+  }
+  function ell(c, rx, ry, rz, bone, reg, k) {
+    P.push({ t: 1, c: c, r: new V(rx, ry, rz), bone: bone, reg: reg, k: k || 0.03 });
+  }
+  function hp(x, y, z) {
+    return SK_HEAD.clone().add(new V(x, y, z).multiplyScalar(SK_HS));
+  }
+  // head: skull, jaw, cheeks, brow, nose, ears, chin (head-local numbers match the face features)
+  ell(hp(0, 0, 0), 0.107 * SK_HS, 0.122 * SK_HS, 0.115 * SK_HS, 'head', 'skin', 0.02);
+  if (female) ell(hp(0, -0.04, 0.008), 0.0805 * SK_HS, 0.0713 * SK_HS, 0.0943 * SK_HS, 'head', 'skin', 0.03);
+  else ell(hp(0, -0.046, 0.012), 0.088 * SK_HS, 0.07 * SK_HS, 0.09 * SK_HS, 'head', 'skin', 0.03);
+  [-1, 1].forEach(function (s) {
+    ell(hp(s * 0.052, -0.02, 0.072), 0.034 * SK_HS, 0.026 * SK_HS, 0.03 * SK_HS, 'head', 'skin', 0.02);
+    ell(hp(s * 0.107, -0.004, 0.0), 0.014 * SK_HS, 0.032 * SK_HS, 0.022 * SK_HS, 'head', 'skin', 0.008);
+  });
+  cap(hp(-0.04, 0.038, 0.098), hp(0.04, 0.038, 0.098), 0.012 * SK_HS, 0.012 * SK_HS, 'head', 'skin', 0.016);
+  cap(hp(0, 0.004, 0.108), hp(0, -0.024, 0.126), 0.011 * SK_HS, 0.017 * SK_HS, 'head', 'skin', 0.012);
+  if (!female) ell(hp(0, -0.09, 0.06), 0.032 * SK_HS, 0.022 * SK_HS, 0.026 * SK_HS, 'head', 'skin', 0.016);
+  // neck and torso
+  cap(new V(0, 1.44, -0.006), new V(0, 1.62, 0), 0.06 * lm, 0.05 * lm, 'torso', 'skin', 0.03);
+  ell(new V(0, 0.97, 0), female ? 0.17 : 0.155, 0.12, female ? 0.11 : 0.105, 'root', 'bottom', 0.04);
+  cap(
+    new V(0, 1.0, 0),
+    new V(0, 1.22, 0.01),
+    female ? 0.12 : 0.13,
+    female ? 0.125 : 0.145,
+    'torso',
+    'top',
+    0.05
+  );
+  ell(
+    new V(0, 1.32, 0.012),
+    female ? 0.162 : 0.185,
+    female ? 0.14 : 0.15,
+    female ? 0.102 : 0.11,
+    'torso',
+    'top',
+    0.05
+  );
+  if (female)
+    [-1, 1].forEach(function (s) {
+      ell(new V(s * 0.056, 1.3, 0.068), 0.058, 0.052, 0.048, 'torso', 'top', 0.03);
+    });
+  cap(
+    new V(-0.13 * lm, 1.455, -0.012),
+    new V(0.13 * lm, 1.455, -0.012),
+    0.056 * lm,
+    0.056 * lm,
+    'torso',
+    'top',
+    0.05
+  );
+  // arms (rest pose hangs slightly outward, matching the arm groups)
+  [-1, 1].forEach(function (s) {
+    var ua = s < 0 ? 'uaL' : 'uaR',
+      fa = s < 0 ? 'faL' : 'faR',
+      dir = new V(s * Math.sin(0.1), -Math.cos(0.1), 0),
+      sh = new V(s * 0.235, 1.47, 0),
+      el = sh.clone().addScaledVector(dir, 0.3),
+      wr = el.clone().addScaledVector(dir, 0.27),
+      hc = el.clone().addScaledVector(dir, 0.335);
+    ell(new V(s * 0.228, 1.448, 0), 0.07 * lm, 0.074 * lm, 0.066 * lm, ua, 'top', 0.04);
+    cap(sh, el, 0.055 * lm, 0.043 * lm, ua, 'top', 0.03);
+    cap(el, wr, 0.045 * lm, 0.033 * lm, fa, 'top', 0.022);
+    ell(hc, 0.03 * lm, 0.058 * lm, 0.045 * lm, fa, 'hands', 0.016);
+    cap(
+      wr.clone().add(new V(-s * 0.004, -0.024, 0.026)),
+      wr.clone().add(new V(-s * 0.012, -0.066, 0.042)),
+      0.012 * lm,
+      0.011 * lm,
+      fa,
+      'hands',
+      0.012
+    );
+    // legs
+    var th = s < 0 ? 'thL' : 'thR',
+      sk = s < 0 ? 'shL' : 'shR',
+      x = s * 0.1;
+    ell(new V(s * 0.072, 0.93, -0.05), female ? 0.09 : 0.084, 0.085, 0.072, 'root', 'bottom', 0.04);
+    cap(new V(x, 0.95, 0), new V(x, 0.48, 0.005), 0.086 * lm, 0.058 * lm, th, 'bottom', 0.04);
+    cap(new V(x, 0.48, 0.005), new V(x, 0.075, -0.005), 0.056 * lm, 0.037 * lm, sk, 'bottom', 0.025);
+    ell(new V(x, 0.33, -0.026), 0.05 * lm, 0.1, 0.052 * lm, sk, 'bottom', 0.03);
+    cap(new V(x, 0.045, -0.045), new V(x, 0.04, 0.13), 0.05 * lm, 0.043 * lm, sk, 'shoes', 0.02, true);
+  });
+  P.forEach(function (p) {
+    var lo, hi, m;
+    if (p.t === 0) {
+      m = Math.max(p.ra, p.rb) + p.k;
+      lo = p.a.clone().min(p.b).subScalar(m);
+      hi = p.a.clone().max(p.b).addScalar(m);
+      p.ba = p.b.clone().sub(p.a);
+      p.bb = p.ba.lengthSq();
+    } else {
+      lo = p.c.clone().sub(p.r).subScalar(p.k);
+      hi = p.c.clone().add(p.r).addScalar(p.k);
+    }
+    p.lo = lo;
+    p.hi = hi;
+  });
+  return P;
+}
+function skDist(p, x, y, z) {
+  var d;
+  if (p.t === 0) {
+    var px = x - p.a.x,
+      py = y - p.a.y,
+      pz = z - p.a.z,
+      t = clamp((px * p.ba.x + py * p.ba.y + pz * p.ba.z) / p.bb, 0, 1),
+      qx = px - p.ba.x * t,
+      qy = py - p.ba.y * t,
+      qz = pz - p.ba.z * t;
+    d = Math.sqrt(qx * qx + qy * qy + qz * qz) - (p.ra + (p.rb - p.ra) * t);
+    if (p.flat) d = Math.max(d, -y);
+  } else {
+    var ex = (x - p.c.x) / p.r.x,
+      ey = (y - p.c.y) / p.r.y,
+      ez = (z - p.c.z) / p.r.z,
+      k0 = Math.sqrt(ex * ex + ey * ey + ez * ez),
+      fx = ex / p.r.x,
+      fy = ey / p.r.y,
+      fz = ez / p.r.z,
+      k1 = Math.sqrt(fx * fx + fy * fy + fz * fz);
+    d = k1 > 1e-9 ? (k0 * (k0 - 1)) / k1 : -Math.min(p.r.x, p.r.y, p.r.z);
+  }
+  return d;
+}
+function skField(P, x, y, z) {
+  var d = 1e9;
+  for (var i = 0; i < P.length; i++) {
+    var p = P[i];
+    if (x < p.lo.x || y < p.lo.y || z < p.lo.z || x > p.hi.x || y > p.hi.y || z > p.hi.z) continue;
+    var di = skDist(p, x, y, z);
+    if (d === 1e9) d = di;
+    else {
+      var h = Math.max(p.k - Math.abs(d - di), 0) / p.k;
+      d = Math.min(d, di) - h * h * p.k * 0.25;
+    }
+  }
+  return d === 1e9 ? 0.1 : d;
+}
+// naive surface nets: one vertex per surface cell, one quad per sign-changing grid edge
+function skNets(f, ox, oy, oz, h, nx, ny, nz) {
+  var V = new Float32Array(nx * ny * nz),
+    x,
+    y,
+    z,
+    i = 0;
+  for (z = 0; z < nz; z++)
+    for (y = 0; y < ny; y++) for (x = 0; x < nx; x++) V[i++] = f(ox + x * h, oy + y * h, oz + z * h);
+  var gi = function (x, y, z) {
+    return x + nx * (y + ny * z);
+  };
+  var cx = nx - 1,
+    cy = ny - 1,
+    cz = nz - 1,
+    C = new Int32Array(cx * cy * cz).fill(-1),
+    pos = [],
+    idx = [];
+  var E = [
+    [0, 1],
+    [2, 3],
+    [4, 5],
+    [6, 7],
+    [0, 2],
+    [1, 3],
+    [4, 6],
+    [5, 7],
+    [0, 4],
+    [1, 5],
+    [2, 6],
+    [3, 7]
+  ];
+  var cv = new Float32Array(8);
+  for (z = 0; z < cz; z++)
+    for (y = 0; y < cy; y++)
+      for (x = 0; x < cx; x++) {
+        var m = 0;
+        for (var c = 0; c < 8; c++) {
+          cv[c] = V[gi(x + (c & 1), y + ((c >> 1) & 1), z + ((c >> 2) & 1))];
+          if (cv[c] < 0) m |= 1 << c;
+        }
+        if (m === 0 || m === 255) continue;
+        var sx = 0,
+          sy = 0,
+          sz = 0,
+          n = 0;
+        for (var e = 0; e < 12; e++) {
+          var a = E[e][0],
+            b = E[e][1];
+          if (cv[a] < 0 === cv[b] < 0) continue;
+          var t = cv[a] / (cv[a] - cv[b]);
+          sx += (a & 1) + ((b & 1) - (a & 1)) * t;
+          sy += ((a >> 1) & 1) + (((b >> 1) & 1) - ((a >> 1) & 1)) * t;
+          sz += ((a >> 2) & 1) + (((b >> 2) & 1) - ((a >> 2) & 1)) * t;
+          n++;
+        }
+        C[x + cx * (y + cy * z)] = pos.length / 3;
+        pos.push(ox + (x + sx / n) * h, oy + (y + sy / n) * h, oz + (z + sz / n) * h);
+      }
+  var dims = [nx, ny, nz];
+  var cell = function (q) {
+    return C[q[0] + cx * (q[1] + cy * q[2])];
+  };
+  for (z = 0; z < nz; z++)
+    for (y = 0; y < ny; y++)
+      for (x = 0; x < nx; x++) {
+        var P0 = [x, y, z],
+          v0 = V[gi(x, y, z)];
+        for (var ax = 0; ax < 3; ax++) {
+          var u = (ax + 1) % 3,
+            w = (ax + 2) % 3;
+          if (P0[ax] >= dims[ax] - 1 || P0[u] < 1 || P0[w] < 1 || P0[u] > dims[u] - 2 || P0[w] > dims[w] - 2)
+            continue;
+          var P1 = P0.slice();
+          P1[ax]++;
+          if (v0 < 0 === V[gi(P1[0], P1[1], P1[2])] < 0) continue;
+          var q0 = P0.slice(),
+            q1 = P0.slice(),
+            q2 = P0.slice(),
+            q3 = P0.slice();
+          q1[u]--;
+          q2[u]--;
+          q2[w]--;
+          q3[w]--;
+          var A = cell(q0),
+            B = cell(q1),
+            Cc = cell(q2),
+            D = cell(q3);
+          if (A < 0 || B < 0 || Cc < 0 || D < 0) continue;
+          idx.push(A, B, Cc, A, Cc, D);
+        }
+      }
+  return { pos: pos, idx: idx };
+}
+function skBuild(P, box, h, cut) {
+  var f = function (x, y, z) {
+      var d = skField(P, x, y, z);
+      return cut ? Math.max(d, cut(y)) : d;
+    },
+    nx = Math.ceil((box[3] - box[0]) / h) + 1,
+    ny = Math.ceil((box[4] - box[1]) / h) + 1,
+    nz = Math.ceil((box[5] - box[2]) / h) + 1;
+  var r = skNets(f, box[0], box[1], box[2], h, nx, ny, nz),
+    nv = r.pos.length / 3,
+    nor = new Float32Array(nv * 3),
+    uv = new Float32Array(nv * 2),
+    si = new Uint16Array(nv * 4),
+    sw = new Float32Array(nv * 4),
+    e = h * 0.35;
+  for (var i = 0; i < nv; i++) {
+    var x = r.pos[i * 3],
+      y = r.pos[i * 3 + 1],
+      z = r.pos[i * 3 + 2];
+    var gx = f(x + e, y, z) - f(x - e, y, z),
+      gy = f(x, y + e, z) - f(x, y - e, z),
+      gz = f(x, y, z + e) - f(x, y, z - e),
+      gl = Math.hypot(gx, gy, gz) || 1;
+    nor[i * 3] = gx / gl;
+    nor[i * 3 + 1] = gy / gl;
+    nor[i * 3 + 2] = gz / gl;
+    // region from the nearest part; weights from the two nearest bones (blend at joints)
+    var best = 1e9,
+      reg = 0,
+      bd = {};
+    P.forEach(function (p) {
+      var d = skDist(p, x, y, z);
+      if (d < best) {
+        best = d;
+        reg = SK_REG[p.reg];
+      }
+      if (bd[p.bone] === undefined || d < bd[p.bone]) bd[p.bone] = d;
+    });
+    var ks = Object.keys(bd).sort(function (a, b) {
+        return bd[a] - bd[b];
+      }),
+      t = ks.length > 1 ? clamp((bd[ks[1]] - bd[ks[0]]) / 0.05, 0, 1) : 1,
+      w1 = 0.5 + 0.5 * t;
+    si[i * 4] = SK_BONES.indexOf(ks[0]);
+    si[i * 4 + 1] = ks.length > 1 ? SK_BONES.indexOf(ks[1]) : 0;
+    sw[i * 4] = w1;
+    sw[i * 4 + 1] = ks.length > 1 ? 1 - w1 : 0;
+    uv[i * 2] = (reg + 0.5) / 5;
+    uv[i * 2 + 1] = 0.5;
+  }
+  // wind every quad so it faces along the field gradient
+  var I = r.idx;
+  for (var k = 0; k < I.length; k += 3) {
+    var a = I[k],
+      b = I[k + 1],
+      c = I[k + 2];
+    var ux = r.pos[b * 3] - r.pos[a * 3],
+      uy = r.pos[b * 3 + 1] - r.pos[a * 3 + 1],
+      uz = r.pos[b * 3 + 2] - r.pos[a * 3 + 2],
+      vx = r.pos[c * 3] - r.pos[a * 3],
+      vy = r.pos[c * 3 + 1] - r.pos[a * 3 + 1],
+      vz = r.pos[c * 3 + 2] - r.pos[a * 3 + 2];
+    var fnx = uy * vz - uz * vy,
+      fny = uz * vx - ux * vz,
+      fnz = ux * vy - uy * vx;
+    if (
+      fnx * (nor[a * 3] + nor[b * 3] + nor[c * 3]) +
+        fny * (nor[a * 3 + 1] + nor[b * 3 + 1] + nor[c * 3 + 1]) +
+        fnz * (nor[a * 3 + 2] + nor[b * 3 + 2] + nor[c * 3 + 2]) <
+      0
+    ) {
+      I[k + 1] = c;
+      I[k + 2] = b;
+    }
+  }
+  var g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(r.pos, 3));
+  g.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+  g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  g.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(si, 4));
+  g.setAttribute('skinWeight', new THREE.BufferAttribute(sw, 4));
+  g.setIndex(I);
+  g.computeBoundingSphere();
+  return g;
+}
+var SK_GEO = {};
+function skGeo(female) {
+  var key = female ? 'f' : 'm';
+  if (SK_GEO[key]) return SK_GEO[key];
+  var P = skPrims(female);
+  return (SK_GEO[key] = {
+    body: skBuild(P, [-0.37, -0.02, -0.17, 0.37, 1.61, 0.2], 0.021, function (y) {
+      return y - 1.6;
+    }),
+    head: skBuild(P, [-0.15, 1.53, -0.16, 0.15, 1.85, 0.18], 0.0095, function (y) {
+      return 1.545 - y;
+    })
+  });
+}
+var SK_MAT = {};
+function skMat(cols) {
+  var key = cols.join(',');
+  if (SK_MAT[key]) return SK_MAT[key];
+  var d = new Uint8Array(20);
+  cols.forEach(function (hex, i) {
+    d[i * 4] = (hex >> 16) & 255;
+    d[i * 4 + 1] = (hex >> 8) & 255;
+    d[i * 4 + 2] = hex & 255;
+    d[i * 4 + 3] = 255;
+  });
+  var t = new THREE.DataTexture(d, 5, 1);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.minFilter = t.magFilter = THREE.NearestFilter;
+  t.needsUpdate = true;
+  return (SK_MAT[key] = toon({ map: t }));
+}
+// attach the sculpted body to a person's joint groups (call while they are in rest pose)
+function skAttach(g, u, female, cols) {
+  var bones = [
+    u.root,
+    u.torso,
+    u.head,
+    u.armL.p,
+    u.armL.j,
+    u.armR.p,
+    u.armR.j,
+    u.legL.p,
+    u.legL.j,
+    u.legR.p,
+    u.legR.j
+  ].map(function (grp) {
+    var b = new THREE.Bone();
+    grp.add(b);
+    return b;
+  });
+  g.updateMatrixWorld(true);
+  var sk = new THREE.Skeleton(bones),
+    geo = skGeo(female),
+    mat = skMat(cols),
+    id = new THREE.Matrix4();
+  [geo.body, geo.head].forEach(function (gg) {
+    var m = new THREE.SkinnedMesh(gg, mat);
+    m.bind(sk, id);
+    m.castShadow = true;
+    m.frustumCulled = false;
+    g.add(m);
+  });
+}
+
+/* extra fighter look: the Soldier model from the three.js examples (Mixamo character and clips).
+   Loaded in the background; until it arrives every fighter uses the sculpted look. */
+var SOLDIER = null;
+new GLTFLoader().load(
+  'assets/models/soldier.glb',
+  function (gl) {
+    var m = gl.scene;
+    m.traverse(function (o) {
+      if (!o.isMesh) return;
+      o.material = toon({ map: o.material.map, color: 0xffffff });
+      o.castShadow = true;
+      o.frustumCulled = false;
+    });
+    m.updateMatrixWorld(true);
+    var bx = new THREE.Box3().setFromObject(m),
+      sc = 1.78 / (bx.max.y - bx.min.y);
+    var clip = function (n) {
+      return gl.animations.filter(function (a) {
+        return a.name === n;
+      })[0];
+    };
+    SOLDIER = {
+      scene: m,
+      s: sc,
+      oy: -bx.min.y * sc,
+      clips: { idle: clip('Idle'), walk: clip('Walk'), run: clip('Run') }
+    };
+  },
+  undefined,
+  function () {}
+);
+var SOLDIER_SHARE = 0.5; // share of armed fighters drawn with the Soldier model once it is loaded
+function mkSoldier() {
+  var g = new THREE.Group(),
+    root = new THREE.Group(),
+    u = { armed: true, root: root };
+  g.add(root);
+  var m = SkeletonUtils.clone(SOLDIER.scene);
+  m.scale.setScalar(SOLDIER.s);
+  m.position.y = SOLDIER.oy;
+  m.rotation.y = Math.PI; // the model faces -z; people in the game face +z
+  root.add(m);
+  u.mixer = new THREE.AnimationMixer(m);
+  u.acts = {};
+  for (var k in SOLDIER.clips) if (SOLDIER.clips[k]) u.acts[k] = u.mixer.clipAction(SOLDIER.clips[k]);
+  u.cur = '';
+  // carry a rifle in the right hand
+  var hand = m.getObjectByName('mixamorigRightHand');
+  if (hand) {
+    g.updateMatrixWorld(true);
+    var ws = new THREE.Vector3();
+    hand.getWorldScale(ws);
+    var rf = new THREE.Mesh(PG.rifle, MP_RIFLE);
+    rf.scale.setScalar(1 / ws.x);
+    rf.position.set(0, 0.08 / ws.x, 0.02 / ws.x);
+    rf.rotation.set(-Math.PI / 2, 0, 0);
+    rf.castShadow = true;
+    hand.add(rf);
+    u.rifle = rf;
+  }
+  var blob = new THREE.Mesh(PG.blob, MATS.blob);
+  blob.rotation.x = -Math.PI / 2;
+  u.blob = blob;
+  g.rotation.order = 'YXZ';
+  g.userData = u;
+  return g;
+}
+function soldierAnim(u, mode, ph, dt) {
+  var want = u.acts[mode] ? mode : 'idle',
+    a = u.acts[want];
+  if (!a) return;
+  if (u.cur !== want) {
+    var old = u.acts[u.cur];
+    a.reset().play();
+    if (old && dt < 1) a.crossFadeFrom(old, 0.25, false);
+    else if (old) old.stop();
+    u.cur = want;
+  }
+  if (dt >= 1) a.time = ((ph / (Math.PI * 2)) % 1) * a.getClip().duration; // still frames (previews)
+  u.mixer.update(dt >= 1 ? 0 : dt);
+}
 // kind: 'e' enemy, 'c' civilian / hostage / VIP / player look.
 // An enemy given civilian clothes (o.shirt) is the disguised wanted man: no gear, no rifle.
 function mkPerson(kind, r, o) {
@@ -2125,26 +2798,19 @@ function mkPerson(kind, r, o) {
     skin = pmat(skinHex, 0.62);
   var robe = !armed && (o.thobe !== undefined ? o.thobe : r() < 0.55);
   var female = o.hat === 'shayla';
-  var cloth = armed
-    ? MP_CAMO
+  var topHex = armed
+    ? 0x8c7a56
     : robe
-      ? pmat(o.robe || 0xf2f0e8, 0.86)
-      : o.shirt
-        ? pmat(o.shirt, 0.8)
-        : pmat([0x2f6fb8, 0xd8ccb0, 0x4f8a5a, 0xa8743f, 0xcfcfcf][Math.floor(r() * 5)], 0.8);
-  var pants = armed ? MP_CAMO : pmat([0x2b3342, 0x5a5148, 0x3a3a3a][Math.floor(r() * 3)], 0.88),
-    shoe = robe ? pmat(0x5a3a22, 0.7) : pmat(0x1d1713, 0.65),
-    glove = pmat(0x24221e, 0.8);
+      ? o.robe || 0xf2f0e8
+      : o.shirt || [0x2f6fb8, 0xd8ccb0, 0x4f8a5a, 0xa8743f, 0xcfcfcf][Math.floor(r() * 5)];
+  var botHex = armed ? 0x6f6248 : robe ? topHex : [0x2b3342, 0x5a5148, 0x3a3a3a][Math.floor(r() * 3)];
+  var cloth = pmat(topHex, 0.8),
+    shoeHex = robe && !o.bisht ? 0x5a3a22 : 0x141212;
   var root = new THREE.Group();
   g.add(root);
   u.root = root;
-  var foot = robe ? PG.boot : PG.boot;
-  u.legL = limb(root, -0.1, 0.92, 0, PG.thigh, PG.shin, 0.44, pants, pants, foot, shoe);
-  u.legR = limb(root, 0.1, 0.92, 0, PG.thigh, PG.shin, 0.44, pants, pants, foot, shoe);
-  if (robe)
-    [u.legL, u.legR].forEach(function (l) {
-      l.j.children[1].scale.set(1, 0.6, 0.95);
-    });
+  u.legL = limb(root, -0.1, 0.92, 0, null, null, 0.44);
+  u.legR = limb(root, 0.1, 0.92, 0, null, null, 0.44);
   var torso = new THREE.Group();
   torso.position.y = 0.92;
   root.add(torso);
@@ -2159,14 +2825,9 @@ function mkPerson(kind, r, o) {
       addM(torso, PG2.collar, cloth, 0, 0.645, 0.004);
     }
   } else {
-    addM(torso, PG2.torso, cloth, 0, 0, 0);
-    [-1, 1].forEach(function (s) {
-      addM(torso, PG2.shoulder, cloth, s * 0.2, 0.535, 0);
-    });
-    addM(torso, PG2.belt, pmat(0x2a2018, 0.7), 0, 0.0, 0, 1, 1, 0.68);
+    addM(torso, PG2.belt, pmat(0x2a2018, 0.7), 0, 0.03, 0, 1.02, 1, 0.72);
     if (!armed) addM(torso, PG2.collar, cloth, 0, 0.64, 0.004, 1.05, 1, 1);
   }
-  addM(torso, PG.neck, skin, 0, 0.67, 0);
   var head = new THREE.Group();
   head.position.set(0, 0.76, 0);
   head.scale.setScalar(1.07);
@@ -2175,11 +2836,11 @@ function mkPerson(kind, r, o) {
   var hat =
     o.hat || (armed ? 'helmet' : robe ? (r() < 0.55 ? 'shemagh' : 'ghutra') : r() < 0.4 ? 'cap' : 'none');
   var br = r(),
-    beard = female ? 0 : br < 0.22 ? 0 : br < 0.42 ? 1 : br < 0.75 ? 2 : 3;
+    beard = female ? 0 : o.beard != null ? o.beard : br < 0.22 ? 0 : br < 0.42 ? 1 : br < 0.75 ? 2 : 3;
   var covered = hat === 'shemagh' || hat === 'ghutra' || hat === 'shayla' || hat === 'helmet';
   var hm = addM(
     head,
-    headGeo(skinHex, hairHex, beard, !covered, hat === 'none' || hat === 'cap', female),
+    headGeo(skinHex, hairHex, beard, !covered, hat === 'none' || hat === 'cap', female, true),
     MP_HEAD,
     0,
     0,
@@ -2187,16 +2848,14 @@ function mkPerson(kind, r, o) {
   );
   hm.castShadow = true;
   // arms; sleeves end in a cuff on robes, gloves on fighters
-  var handM = armed ? glove : skin;
-  u.armL = limb(torso, -0.235, 0.55, 0, PG.uarm, PG.farm, 0.3, cloth, cloth, PG2.hand, handM);
-  u.armR = limb(torso, 0.235, 0.55, 0, PG.uarm, PG.farm, 0.3, cloth, cloth, PG2.hand, handM);
+  u.armL = limb(torso, -0.235, 0.55, 0, null, null, 0.3);
+  u.armR = limb(torso, 0.235, 0.55, 0, null, null, 0.3);
   [u.armL, u.armR].forEach(function (a) {
-    if (armed) a.j.children[1].scale.set(0.78, 0.9, 0.7);
-    else a.j.children[1].scale.set(0.9, 1.15, 0.78);
-    if (robe) addM(a.j, PG2.cuff, female ? cloth : pmat(0xf6f4ee, 0.8), 0, -0.27, 0);
+    if (robe) addM(a.j, PG2.cuff, female ? cloth : pmat(0xf6f4ee, 0.8), 0, -0.27, 0, 0.82, 1, 0.82);
   });
   u.armL.p.rotation.z = -0.1;
   u.armR.p.rotation.z = 0.1;
+  skAttach(g, u, female, [skinHex, topHex, botHex, shoeHex, armed ? 0x24221e : skinHex]);
   if (armed) {
     // helmet with rim and goggles, face wrapped in a lithma, plate carrier, knee pads, rifle
     var olive = pmat(0x3a3f30, 0.6, 0.1),
@@ -2224,11 +2883,13 @@ function mkPerson(kind, r, o) {
     var hmat = hat === 'ghutra' ? cloth2(0xf6f4ee) : MP_SHEM;
     addM(head, PG.dome, hmat, 0, 0.05, -0.008, 0.138, 0.128, 0.148);
     addM(head, PG.drape, hmat, 0, -0.152, -0.018, 1.04, 1, 1.02);
-    addM(torso, PG.backDrape, hmat, 0, 0.42, -0.045, 1.08, 1, 1.05);
+    if (!o.bisht) addM(torso, PG.backDrape, hmat, 0, 0.42, -0.045, 1.08, 1, 1.05);
     // the two front ends falling over the chest
     [-1, 1].forEach(function (s) {
-      var f = addM(torso, PG2.flap, hmat, s * 0.118, 0.45, 0.115);
-      f.rotation.set(-0.12, 0, s * 0.1);
+      var f = o.bisht
+        ? addM(torso, PG2.flap, hmat, s * 0.15, 0.4, 0.17, 1.15, 1.25, 1)
+        : addM(torso, PG2.flap, hmat, s * 0.118, 0.45, 0.115);
+      f.rotation.set(o.bisht ? -0.05 : -0.12, 0, s * (o.bisht ? 0.16 : 0.1));
     });
     var agal = pmat(0x111111, 0.55);
     [0.098, 0.12].forEach(function (y) {
@@ -2249,53 +2910,670 @@ function mkPerson(kind, r, o) {
     addM(head, PG.dome, capM, 0, 0.032, -0.006, 0.124, 0.104, 0.13);
     addM(head, G.box, capM, 0, 0.035, 0.125, 0.18, 0.014, 0.1);
   }
+  if (o.bisht && robe && !female) addBisht(root, u, hat === 'shemagh' || hat === 'ghutra' ? hmat : null);
   var blob = new THREE.Mesh(PG.blob, MATS.blob);
   blob.rotation.x = -Math.PI / 2;
   u.blob = blob;
   g.rotation.order = 'YXZ';
   g.userData = u;
+  // swap in the Soldier after the normal build, so the world RNG sequence is identical on every client
+  if (armed && SOLDIER && !o.noSoldier && Math.random() < SOLDIER_SHARE) return mkSoldier();
   return g;
 }
-// walk / idle / aim poses, driven by phase; only armed people keep their arms on the rifle
+/* motion-captured idle / walk / run, retargeted from the three.js Xbot example (Mixamo clips).
+   Each frame: root bob, torso and head quaternions, then per limb the upper quaternion and the
+   knee / elbow hinge angle, in the order legL, legR, armL, armR. */
+var MOCAP = {
+  idle: {
+    d: 2.5,
+    f: [
+      [
+        0, -0.013, -0.019, -0.004, 1, 0.106, 0.019, 0.001, 0.994, -0.033, 0.043, -0.075, 0.996, 0.171, -0.038,
+        0.004, 0.075, 0.996, 0.211, 0.013, 0.152, -0.096, 0.984, -0.131, 0.049, -0.246, 0.114, 0.961, -0.225
+      ],
+      [
+        0, -0.013, -0.019, -0.005, 1, 0.106, 0.019, 0, 0.994, -0.033, 0.043, -0.075, 0.996, 0.171, -0.038,
+        0.005, 0.075, 0.996, 0.211, 0.014, 0.153, -0.096, 0.983, -0.132, 0.049, -0.246, 0.113, 0.961, -0.224
+      ],
+      [
+        0, -0.013, -0.019, -0.005, 1, 0.106, 0.019, 0, 0.994, -0.033, 0.043, -0.075, 0.996, 0.17, -0.038,
+        0.004, 0.075, 0.996, 0.212, 0.013, 0.152, -0.095, 0.984, -0.13, 0.049, -0.246, 0.113, 0.961, -0.225
+      ],
+      [
+        0, -0.013, -0.019, -0.005, 1, 0.107, 0.02, 0, 0.994, -0.033, 0.042, -0.075, 0.996, 0.17, -0.038,
+        0.004, 0.075, 0.996, 0.211, 0.012, 0.151, -0.095, 0.984, -0.129, 0.05, -0.245, 0.113, 0.962, -0.225
+      ],
+      [
+        0, -0.013, -0.019, -0.005, 1, 0.107, 0.019, 0, 0.994, -0.033, 0.041, -0.076, 0.996, 0.17, -0.037,
+        0.004, 0.075, 0.996, 0.211, 0.014, 0.152, -0.096, 0.984, -0.131, 0.05, -0.245, 0.113, 0.962, -0.224
+      ],
+      [
+        0, -0.013, -0.019, -0.005, 1, 0.108, 0.019, 0, 0.994, -0.033, 0.041, -0.076, 0.996, 0.171, -0.037,
+        0.003, 0.075, 0.996, 0.211, 0.014, 0.152, -0.096, 0.984, -0.131, 0.05, -0.245, 0.113, 0.962, -0.224
+      ],
+      [
+        0, -0.013, -0.019, -0.005, 1, 0.108, 0.019, 0, 0.994, -0.033, 0.04, -0.076, 0.996, 0.171, -0.037,
+        0.004, 0.075, 0.996, 0.212, 0.013, 0.151, -0.096, 0.984, -0.13, 0.05, -0.245, 0.112, 0.962, -0.223
+      ],
+      [
+        0, -0.013, -0.019, -0.005, 1, 0.108, 0.019, 0, 0.994, -0.033, 0.041, -0.075, 0.996, 0.172, -0.038,
+        0.005, 0.075, 0.996, 0.212, 0.012, 0.15, -0.096, 0.984, -0.129, 0.05, -0.245, 0.112, 0.962, -0.223
+      ],
+      [
+        0, -0.013, -0.019, -0.005, 1, 0.108, 0.019, 0, 0.994, -0.033, 0.04, -0.075, 0.996, 0.172, -0.038,
+        0.005, 0.075, 0.996, 0.213, 0.013, 0.152, -0.096, 0.984, -0.131, 0.05, -0.245, 0.112, 0.962, -0.223
+      ],
+      [
+        0, -0.013, -0.019, -0.005, 1, 0.108, 0.019, 0, 0.994, -0.033, 0.04, -0.076, 0.996, 0.172, -0.037,
+        0.004, 0.075, 0.996, 0.213, 0.013, 0.151, -0.096, 0.984, -0.13, 0.05, -0.245, 0.113, 0.962, -0.223
+      ],
+      [
+        0, -0.013, -0.019, -0.005, 1, 0.108, 0.019, 0, 0.994, -0.033, 0.039, -0.075, 0.996, 0.172, -0.037,
+        0.004, 0.075, 0.996, 0.213, 0.012, 0.15, -0.096, 0.984, -0.128, 0.05, -0.245, 0.113, 0.962, -0.223
+      ],
+      [
+        0, -0.013, -0.019, -0.006, 1, 0.108, 0.018, 0, 0.994, -0.033, 0.04, -0.075, 0.996, 0.172, -0.037,
+        0.004, 0.075, 0.996, 0.213, 0.013, 0.153, -0.096, 0.984, -0.131, 0.05, -0.245, 0.113, 0.962, -0.223
+      ],
+      [
+        0, -0.013, -0.019, -0.006, 1, 0.108, 0.019, 0, 0.994, -0.033, 0.04, -0.075, 0.996, 0.172, -0.037,
+        0.003, 0.075, 0.996, 0.213, 0.013, 0.153, -0.096, 0.984, -0.131, 0.049, -0.245, 0.113, 0.962, -0.223
+      ],
+      [
+        0, -0.013, -0.019, -0.006, 1, 0.108, 0.019, 0, 0.994, -0.033, 0.039, -0.075, 0.996, 0.172, -0.037,
+        0.004, 0.075, 0.996, 0.213, 0.012, 0.152, -0.096, 0.984, -0.13, 0.049, -0.245, 0.113, 0.962, -0.222
+      ],
+      [
+        0, -0.013, -0.019, -0.006, 1, 0.108, 0.019, 0, 0.994, -0.033, 0.039, -0.075, 0.996, 0.172, -0.037,
+        0.003, 0.075, 0.996, 0.213, 0.011, 0.151, -0.095, 0.984, -0.129, 0.049, -0.245, 0.113, 0.962, -0.223
+      ],
+      [
+        0, -0.013, -0.019, -0.006, 1, 0.108, 0.019, -0.001, 0.994, -0.033, 0.039, -0.075, 0.996, 0.172,
+        -0.037, 0.004, 0.075, 0.996, 0.213, 0.013, 0.153, -0.096, 0.983, -0.131, 0.049, -0.245, 0.112, 0.962,
+        -0.223
+      ],
+      [
+        0, -0.013, -0.019, -0.006, 1, 0.108, 0.019, 0, 0.994, -0.033, 0.039, -0.075, 0.996, 0.173, -0.037,
+        0.003, 0.075, 0.996, 0.213, 0.013, 0.153, -0.096, 0.984, -0.131, 0.049, -0.245, 0.112, 0.962, -0.223
+      ],
+      [
+        0, -0.013, -0.019, -0.006, 1, 0.107, 0.019, 0, 0.994, -0.033, 0.04, -0.075, 0.996, 0.173, -0.037,
+        0.004, 0.075, 0.996, 0.213, 0.012, 0.152, -0.095, 0.984, -0.13, 0.049, -0.245, 0.112, 0.962, -0.223
+      ],
+      [
+        0, -0.013, -0.019, -0.006, 1, 0.107, 0.019, 0, 0.994, -0.033, 0.039, -0.075, 0.996, 0.173, -0.037,
+        0.003, 0.075, 0.996, 0.213, 0.012, 0.153, -0.096, 0.984, -0.131, 0.049, -0.245, 0.112, 0.962, -0.223
+      ],
+      [
+        0, -0.014, -0.019, -0.006, 1, 0.107, 0.019, 0, 0.994, -0.033, 0.038, -0.075, 0.996, 0.173, -0.037,
+        0.003, 0.075, 0.996, 0.213, 0.013, 0.153, -0.096, 0.984, -0.131, 0.049, -0.245, 0.112, 0.962, -0.223
+      ],
+      [
+        0, -0.014, -0.019, -0.006, 1, 0.107, 0.019, 0, 0.994, -0.033, 0.038, -0.075, 0.996, 0.173, -0.037,
+        0.003, 0.075, 0.996, 0.213, 0.013, 0.153, -0.095, 0.984, -0.131, 0.049, -0.245, 0.112, 0.962, -0.223
+      ],
+      [
+        0, -0.014, -0.019, -0.006, 1, 0.107, 0.019, 0, 0.994, -0.033, 0.038, -0.075, 0.996, 0.173, -0.037,
+        0.003, 0.075, 0.996, 0.213, 0.012, 0.151, -0.095, 0.984, -0.13, 0.049, -0.245, 0.112, 0.962, -0.223
+      ],
+      [
+        0, -0.014, -0.019, -0.006, 1, 0.107, 0.019, 0, 0.994, -0.033, 0.038, -0.075, 0.996, 0.173, -0.037,
+        0.003, 0.075, 0.996, 0.213, 0.012, 0.152, -0.095, 0.984, -0.131, 0.049, -0.245, 0.112, 0.962, -0.223
+      ],
+      [
+        0, -0.014, -0.019, -0.007, 1, 0.107, 0.018, 0, 0.994, -0.033, 0.038, -0.075, 0.996, 0.173, -0.037,
+        0.003, 0.075, 0.996, 0.213, 0.013, 0.152, -0.095, 0.984, -0.131, 0.049, -0.245, 0.112, 0.962, -0.223
+      ],
+      [
+        0, -0.014, -0.02, -0.007, 1, 0.108, 0.018, 0, 0.994, -0.033, 0.038, -0.075, 0.996, 0.172, -0.037,
+        0.003, 0.075, 0.996, 0.213, 0.012, 0.151, -0.095, 0.984, -0.13, 0.049, -0.245, 0.112, 0.962, -0.223
+      ],
+      [
+        0, -0.014, -0.02, -0.007, 1, 0.108, 0.019, 0, 0.994, -0.033, 0.038, -0.075, 0.996, 0.172, -0.037,
+        0.003, 0.075, 0.996, 0.213, 0.012, 0.151, -0.095, 0.984, -0.129, 0.05, -0.245, 0.112, 0.962, -0.223
+      ],
+      [
+        0, -0.014, -0.02, -0.007, 1, 0.108, 0.018, 0, 0.994, -0.033, 0.039, -0.075, 0.996, 0.172, -0.038,
+        0.003, 0.075, 0.996, 0.213, 0.013, 0.152, -0.095, 0.984, -0.131, 0.049, -0.245, 0.112, 0.962, -0.224
+      ],
+      [
+        0, -0.014, -0.02, -0.007, 1, 0.109, 0.018, 0, 0.994, -0.033, 0.039, -0.075, 0.996, 0.171, -0.038,
+        0.003, 0.075, 0.996, 0.213, 0.014, 0.152, -0.095, 0.984, -0.131, 0.05, -0.245, 0.112, 0.962, -0.224
+      ],
+      [
+        0, -0.014, -0.02, -0.007, 1, 0.109, 0.019, 0, 0.994, -0.033, 0.039, -0.075, 0.996, 0.171, -0.038,
+        0.003, 0.075, 0.996, 0.213, 0.013, 0.151, -0.095, 0.984, -0.129, 0.05, -0.245, 0.112, 0.962, -0.224
+      ],
+      [
+        0, -0.014, -0.02, -0.007, 1, 0.11, 0.019, 0, 0.994, -0.034, 0.039, -0.075, 0.996, 0.171, -0.038,
+        0.002, 0.076, 0.996, 0.213, 0.014, 0.152, -0.095, 0.984, -0.13, 0.05, -0.245, 0.112, 0.962, -0.224
+      ],
+      [
+        0, -0.014, -0.02, -0.007, 1, 0.11, 0.019, 0, 0.994, -0.034, 0.039, -0.075, 0.996, 0.17, -0.038, 0.001,
+        0.075, 0.996, 0.212, 0.014, 0.152, -0.095, 0.984, -0.13, 0.05, -0.245, 0.112, 0.962, -0.225
+      ],
+      [
+        0, -0.014, -0.02, -0.007, 1, 0.111, 0.019, 0, 0.994, -0.034, 0.039, -0.075, 0.996, 0.17, -0.038,
+        0.001, 0.075, 0.996, 0.212, 0.014, 0.152, -0.095, 0.984, -0.13, 0.05, -0.245, 0.112, 0.962, -0.225
+      ],
+      [
+        0, -0.014, -0.02, -0.007, 1, 0.111, 0.019, 0.001, 0.994, -0.034, 0.041, -0.075, 0.996, 0.169, -0.038,
+        0.001, 0.075, 0.996, 0.213, 0.013, 0.151, -0.095, 0.984, -0.129, 0.05, -0.245, 0.113, 0.962, -0.225
+      ],
+      [
+        0, -0.014, -0.02, -0.007, 1, 0.112, 0.019, 0.001, 0.994, -0.034, 0.04, -0.075, 0.996, 0.169, -0.038,
+        0, 0.075, 0.996, 0.212, 0.014, 0.152, -0.095, 0.984, -0.13, 0.051, -0.245, 0.113, 0.962, -0.225
+      ],
+      [
+        0, -0.014, -0.02, -0.007, 1, 0.112, 0.019, 0.001, 0.994, -0.034, 0.04, -0.075, 0.996, 0.168, -0.038,
+        0, 0.075, 0.996, 0.212, 0.015, 0.153, -0.096, 0.984, -0.13, 0.051, -0.246, 0.113, 0.961, -0.225
+      ],
+      [
+        0, -0.013, -0.019, -0.007, 1, 0.111, 0.019, 0.001, 0.994, -0.034, 0.04, -0.075, 0.996, 0.168, -0.038,
+        -0.001, 0.075, 0.996, 0.211, 0.015, 0.153, -0.096, 0.983, -0.131, 0.051, -0.246, 0.113, 0.961, -0.225
+      ],
+      [
+        0, -0.013, -0.019, -0.007, 1, 0.111, 0.019, 0.002, 0.994, -0.034, 0.04, -0.075, 0.996, 0.168, -0.039,
+        0, 0.075, 0.996, 0.211, 0.014, 0.152, -0.095, 0.984, -0.129, 0.051, -0.246, 0.114, 0.961, -0.225
+      ],
+      [
+        0, -0.013, -0.019, -0.007, 1, 0.111, 0.019, 0.002, 0.994, -0.034, 0.04, -0.075, 0.996, 0.168, -0.039,
+        0, 0.076, 0.996, 0.211, 0.013, 0.151, -0.095, 0.984, -0.128, 0.051, -0.246, 0.114, 0.961, -0.225
+      ],
+      [
+        0, -0.013, -0.019, -0.007, 1, 0.11, 0.019, 0.001, 0.994, -0.035, 0.04, -0.075, 0.996, 0.168, -0.039,
+        0, 0.076, 0.996, 0.211, 0.015, 0.154, -0.096, 0.983, -0.131, 0.051, -0.246, 0.114, 0.961, -0.225
+      ],
+      [
+        0, -0.013, -0.018, -0.007, 1, 0.11, 0.019, 0.001, 0.994, -0.035, 0.04, -0.075, 0.996, 0.168, -0.039,
+        0, 0.076, 0.996, 0.21, 0.014, 0.152, -0.095, 0.984, -0.13, 0.051, -0.246, 0.114, 0.961, -0.225
+      ],
+      [
+        0, -0.013, -0.018, -0.006, 1, 0.11, 0.019, 0.001, 0.994, -0.035, 0.04, -0.075, 0.996, 0.168, -0.039,
+        0.001, 0.076, 0.996, 0.21, 0.013, 0.152, -0.095, 0.984, -0.128, 0.051, -0.246, 0.114, 0.961, -0.224
+      ],
+      [
+        0, -0.013, -0.018, -0.006, 1, 0.11, 0.019, 0.001, 0.994, -0.035, 0.04, -0.075, 0.996, 0.168, -0.039,
+        0.001, 0.076, 0.996, 0.209, 0.015, 0.154, -0.096, 0.983, -0.131, 0.052, -0.246, 0.114, 0.961, -0.224
+      ],
+      [
+        0, -0.013, -0.018, -0.006, 1, 0.11, 0.019, 0.001, 0.994, -0.035, 0.041, -0.075, 0.996, 0.169, -0.039,
+        0.001, 0.076, 0.996, 0.209, 0.015, 0.154, -0.096, 0.983, -0.131, 0.052, -0.246, 0.114, 0.961, -0.224
+      ],
+      [
+        0, -0.013, -0.018, -0.005, 1, 0.11, 0.019, 0.001, 0.994, -0.035, 0.04, -0.075, 0.996, 0.169, -0.039,
+        0.002, 0.076, 0.996, 0.209, 0.013, 0.152, -0.096, 0.984, -0.128, 0.052, -0.246, 0.114, 0.961, -0.224
+      ],
+      [
+        0, -0.013, -0.018, -0.005, 1, 0.11, 0.019, 0.002, 0.994, -0.035, 0.041, -0.075, 0.996, 0.169, -0.039,
+        0.002, 0.076, 0.996, 0.209, 0.014, 0.154, -0.096, 0.983, -0.13, 0.052, -0.247, 0.114, 0.961, -0.225
+      ],
+      [
+        0, -0.013, -0.018, -0.005, 1, 0.11, 0.019, 0.002, 0.994, -0.035, 0.039, -0.075, 0.996, 0.17, -0.039,
+        0.001, 0.076, 0.996, 0.209, 0.015, 0.154, -0.097, 0.983, -0.131, 0.052, -0.247, 0.114, 0.961, -0.225
+      ],
+      [
+        0, -0.013, -0.017, -0.004, 1, 0.11, 0.019, 0.002, 0.994, -0.036, 0.04, -0.075, 0.996, 0.171, -0.039,
+        0.002, 0.076, 0.996, 0.209, 0.014, 0.154, -0.097, 0.983, -0.131, 0.052, -0.247, 0.114, 0.961, -0.225
+      ],
+      [
+        0, -0.013, -0.017, -0.004, 1, 0.11, 0.019, 0.002, 0.994, -0.036, 0.04, -0.075, 0.996, 0.171, -0.039,
+        0.002, 0.076, 0.996, 0.209, 0.013, 0.153, -0.097, 0.983, -0.128, 0.051, -0.247, 0.114, 0.961, -0.225
+      ],
+      [
+        0, -0.013, -0.017, -0.004, 1, 0.11, 0.02, 0.002, 0.994, -0.036, 0.04, -0.075, 0.996, 0.172, -0.039,
+        0.003, 0.076, 0.996, 0.208, 0.014, 0.154, -0.097, 0.983, -0.131, 0.051, -0.247, 0.114, 0.961, -0.225
+      ],
+      [
+        0, -0.013, -0.017, -0.003, 1, 0.11, 0.019, 0.002, 0.994, -0.036, 0.039, -0.075, 0.996, 0.172, -0.039,
+        0.003, 0.076, 0.996, 0.208, 0.014, 0.154, -0.097, 0.983, -0.132, 0.051, -0.248, 0.115, 0.961, -0.224
+      ],
+      [
+        0, -0.013, -0.017, -0.003, 1, 0.11, 0.019, 0.002, 0.994, -0.036, 0.038, -0.075, 0.996, 0.173, -0.039,
+        0.003, 0.076, 0.996, 0.208, 0.014, 0.154, -0.097, 0.983, -0.132, 0.051, -0.248, 0.115, 0.961, -0.224
+      ],
+      [
+        0, -0.013, -0.017, -0.003, 1, 0.109, 0.019, 0.002, 0.994, -0.036, 0.038, -0.075, 0.996, 0.173, -0.039,
+        0.002, 0.076, 0.996, 0.208, 0.013, 0.152, -0.097, 0.983, -0.129, 0.051, -0.248, 0.115, 0.961, -0.224
+      ],
+      [
+        0, -0.013, -0.018, -0.003, 1, 0.109, 0.02, 0.002, 0.994, -0.036, 0.037, -0.075, 0.996, 0.174, -0.039,
+        0.002, 0.076, 0.996, 0.208, 0.011, 0.151, -0.096, 0.984, -0.126, 0.05, -0.248, 0.116, 0.961, -0.224
+      ],
+      [
+        0, -0.014, -0.018, -0.003, 1, 0.109, 0.02, 0.002, 0.994, -0.036, 0.036, -0.075, 0.996, 0.174, -0.039,
+        0.002, 0.076, 0.996, 0.208, 0.014, 0.154, -0.097, 0.983, -0.131, 0.05, -0.248, 0.116, 0.961, -0.224
+      ],
+      [
+        0, -0.014, -0.018, -0.003, 1, 0.109, 0.02, 0.002, 0.994, -0.036, 0.037, -0.075, 0.996, 0.174, -0.038,
+        0.002, 0.076, 0.996, 0.208, 0.014, 0.153, -0.097, 0.983, -0.132, 0.05, -0.248, 0.116, 0.961, -0.224
+      ],
+      [
+        0, -0.014, -0.018, -0.003, 1, 0.109, 0.02, 0.002, 0.994, -0.035, 0.037, -0.075, 0.996, 0.174, -0.038,
+        0.001, 0.076, 0.996, 0.208, 0.011, 0.15, -0.096, 0.984, -0.127, 0.05, -0.247, 0.116, 0.961, -0.224
+      ],
+      [
+        0, -0.014, -0.018, -0.003, 1, 0.108, 0.02, 0.002, 0.994, -0.035, 0.037, -0.075, 0.996, 0.174, -0.038,
+        0.001, 0.076, 0.996, 0.209, 0.014, 0.153, -0.097, 0.983, -0.132, 0.05, -0.247, 0.116, 0.961, -0.224
+      ],
+      [
+        0, -0.014, -0.018, -0.003, 1, 0.108, 0.02, 0.002, 0.994, -0.035, 0.037, -0.075, 0.996, 0.174, -0.038,
+        0.001, 0.076, 0.996, 0.209, 0.014, 0.153, -0.097, 0.983, -0.131, 0.05, -0.247, 0.115, 0.961, -0.224
+      ],
+      [
+        0, -0.014, -0.018, -0.003, 1, 0.108, 0.02, 0.001, 0.994, -0.035, 0.036, -0.075, 0.996, 0.175, -0.038,
+        0.002, 0.076, 0.996, 0.211, 0.013, 0.153, -0.097, 0.983, -0.131, 0.049, -0.247, 0.115, 0.961, -0.224
+      ],
+      [
+        0, -0.014, -0.018, -0.003, 1, 0.108, 0.02, 0.001, 0.994, -0.035, 0.037, -0.076, 0.996, 0.175, -0.038,
+        0.003, 0.076, 0.996, 0.211, 0.013, 0.153, -0.097, 0.983, -0.132, 0.049, -0.247, 0.115, 0.961, -0.223
+      ],
+      [
+        0, -0.014, -0.018, -0.003, 1, 0.108, 0.02, 0.001, 0.994, -0.034, 0.037, -0.076, 0.996, 0.175, -0.038,
+        0.003, 0.075, 0.996, 0.211, 0.014, 0.153, -0.097, 0.983, -0.132, 0.049, -0.247, 0.115, 0.961, -0.223
+      ],
+      [
+        0, -0.014, -0.018, -0.003, 1, 0.109, 0.02, 0.001, 0.994, -0.034, 0.038, -0.076, 0.996, 0.175, -0.037,
+        0.003, 0.075, 0.996, 0.211, 0.013, 0.152, -0.097, 0.983, -0.132, 0.049, -0.247, 0.115, 0.961, -0.223
+      ],
+      [
+        0, -0.014, -0.018, -0.003, 1, 0.109, 0.02, 0.001, 0.994, -0.034, 0.038, -0.076, 0.996, 0.175, -0.037,
+        0.003, 0.075, 0.996, 0.211, 0.013, 0.151, -0.097, 0.984, -0.131, 0.05, -0.247, 0.114, 0.961, -0.223
+      ],
+      [
+        0, -0.014, -0.018, -0.003, 1, 0.11, 0.019, 0.001, 0.994, -0.034, 0.038, -0.076, 0.996, 0.175, -0.037,
+        0.004, 0.075, 0.996, 0.211, 0.012, 0.15, -0.097, 0.984, -0.129, 0.05, -0.246, 0.114, 0.961, -0.224
+      ],
+      [
+        0, -0.015, -0.018, -0.003, 1, 0.11, 0.019, 0.001, 0.994, -0.034, 0.038, -0.076, 0.996, 0.175, -0.037,
+        0.005, 0.075, 0.996, 0.211, 0.013, 0.152, -0.097, 0.984, -0.131, 0.05, -0.247, 0.114, 0.961, -0.223
+      ],
+      [
+        0, -0.015, -0.018, -0.003, 1, 0.111, 0.019, 0.001, 0.994, -0.034, 0.039, -0.076, 0.996, 0.174, -0.037,
+        0.005, 0.075, 0.996, 0.211, 0.013, 0.151, -0.097, 0.984, -0.131, 0.05, -0.246, 0.114, 0.961, -0.223
+      ],
+      [
+        0, -0.015, -0.019, -0.004, 1, 0.111, 0.019, 0.001, 0.994, -0.033, 0.04, -0.075, 0.996, 0.173, -0.037,
+        0.005, 0.075, 0.996, 0.21, 0.013, 0.152, -0.097, 0.984, -0.131, 0.05, -0.246, 0.114, 0.961, -0.223
+      ],
+      [
+        0, -0.015, -0.019, -0.004, 1, 0.111, 0.019, 0.001, 0.994, -0.033, 0.041, -0.075, 0.996, 0.173, -0.037,
+        0.005, 0.075, 0.996, 0.21, 0.013, 0.152, -0.097, 0.984, -0.131, 0.05, -0.246, 0.114, 0.961, -0.223
+      ],
+      [
+        0, -0.015, -0.019, -0.004, 1, 0.111, 0.019, 0.001, 0.994, -0.033, 0.041, -0.076, 0.996, 0.172, -0.037,
+        0.004, 0.075, 0.996, 0.209, 0.013, 0.152, -0.097, 0.984, -0.131, 0.05, -0.246, 0.114, 0.961, -0.224
+      ],
+      [
+        0, -0.014, -0.019, -0.004, 1, 0.11, 0.019, 0, 0.994, -0.033, 0.042, -0.076, 0.996, 0.171, -0.037,
+        0.004, 0.075, 0.996, 0.209, 0.013, 0.151, -0.097, 0.984, -0.131, 0.049, -0.246, 0.114, 0.961, -0.224
+      ],
+      [
+        0, -0.014, -0.019, -0.004, 1, 0.11, 0.02, 0.001, 0.994, -0.033, 0.042, -0.076, 0.996, 0.171, -0.037,
+        0.004, 0.075, 0.996, 0.209, 0.012, 0.15, -0.096, 0.984, -0.129, 0.049, -0.246, 0.114, 0.961, -0.224
+      ],
+      [
+        0, -0.014, -0.019, -0.004, 1, 0.109, 0.019, 0.001, 0.994, -0.033, 0.043, -0.075, 0.996, 0.17, -0.037,
+        0.004, 0.075, 0.996, 0.209, 0.013, 0.152, -0.097, 0.984, -0.131, 0.049, -0.246, 0.114, 0.961, -0.224
+      ],
+      [
+        0, -0.014, -0.019, -0.004, 1, 0.108, 0.019, 0, 0.994, -0.033, 0.043, -0.076, 0.996, 0.17, -0.037,
+        0.004, 0.075, 0.996, 0.209, 0.013, 0.152, -0.097, 0.984, -0.131, 0.049, -0.246, 0.113, 0.961, -0.224
+      ],
+      [
+        0, -0.013, -0.019, -0.004, 1, 0.107, 0.019, 0.001, 0.994, -0.033, 0.043, -0.075, 0.996, 0.171, -0.037,
+        0.004, 0.075, 0.996, 0.209, 0.013, 0.152, -0.096, 0.984, -0.131, 0.049, -0.246, 0.114, 0.961, -0.224
+      ],
+      [
+        0, -0.013, -0.019, -0.004, 1, 0.107, 0.019, 0, 0.994, -0.033, 0.043, -0.075, 0.996, 0.171, -0.037,
+        0.004, 0.075, 0.996, 0.21, 0.013, 0.152, -0.096, 0.984, -0.131, 0.049, -0.246, 0.114, 0.961, -0.224
+      ]
+    ]
+  },
+  walk: {
+    d: 0.967,
+    f: [
+      [
+        -0.01, -0.04, 0.04, -0.011, 0.998, 0.078, -0.044, 0.006, 0.996, -0.09, 0.032, 0.054, 0.994, 0.375,
+        -0.2, 0.03, 0.02, 0.979, 1.2, 0.226, 0.063, -0.094, 0.968, -0.568, 0.11, -0.158, 0.133, 0.972, -0.634
+      ],
+      [
+        -0.007, -0.037, 0.049, -0.01, 0.998, 0.086, -0.048, 0.008, 0.995, -0.06, 0.023, 0.052, 0.997, 0.368,
+        -0.24, 0.008, 0.009, 0.971, 1.083, 0.173, 0.059, -0.106, 0.978, -0.583, 0.133, -0.129, 0.115, 0.976,
+        -0.571
+      ],
+      [
+        -0.01, -0.032, 0.054, -0.005, 0.998, 0.086, -0.05, 0.003, 0.995, -0.032, 0.002, 0.046, 0.998, 0.373,
+        -0.262, -0.016, 0.001, 0.965, 0.911, 0.121, 0.062, -0.119, 0.983, -0.591, 0.162, -0.083, 0.107, 0.978,
+        -0.559
+      ],
+      [
+        -0.014, -0.029, 0.049, -0.001, 0.998, 0.082, -0.045, -0.008, 0.996, -0.003, -0.021, 0.039, 0.999,
+        0.38, -0.273, -0.037, -0.002, 0.961, 0.706, 0.074, 0.083, -0.133, 0.985, -0.593, 0.194, -0.027, 0.1,
+        0.976, -0.559
+      ],
+      [
+        -0.02, -0.026, 0.042, 0.004, 0.999, 0.076, -0.038, -0.021, 0.996, 0.032, -0.049, 0.03, 0.998, 0.362,
+        -0.282, -0.053, -0.002, 0.958, 0.514, 0.039, 0.114, -0.144, 0.982, -0.597, 0.223, 0.009, 0.094, 0.97,
+        -0.53
+      ],
+      [
+        -0.027, -0.025, 0.036, 0.006, 0.999, 0.07, -0.033, -0.032, 0.997, 0.072, -0.08, 0.02, 0.994, 0.33,
+        -0.294, -0.06, -0.001, 0.954, 0.39, 0.016, 0.152, -0.154, 0.976, -0.616, 0.243, 0.023, 0.09, 0.966,
+        -0.458
+      ],
+      [
+        -0.038, -0.028, 0.032, 0.008, 0.999, 0.064, -0.03, -0.04, 0.997, 0.108, -0.088, 0.012, 0.99, 0.316,
+        -0.314, -0.05, -0.005, 0.948, 0.389, 0.007, 0.185, -0.166, 0.969, -0.675, 0.271, 0.034, 0.087, 0.958,
+        -0.433
+      ],
+      [
+        -0.047, -0.029, 0.029, 0.009, 0.999, 0.065, -0.028, -0.045, 0.996, 0.134, -0.059, 0.016, 0.989, 0.326,
+        -0.322, -0.041, -0.009, 0.946, 0.428, -0.002, 0.204, -0.178, 0.963, -0.738, 0.304, 0.059, 0.084,
+        0.947, -0.457
+      ],
+      [
+        -0.045, -0.032, 0.027, 0.011, 0.999, 0.072, -0.026, -0.047, 0.996, 0.144, -0.013, 0.022, 0.989, 0.372,
+        -0.289, -0.04, -0.013, 0.957, 0.37, -0.019, 0.234, -0.19, 0.953, -0.735, 0.311, 0.092, 0.081, 0.942,
+        -0.428
+      ],
+      [
+        -0.042, -0.039, 0.024, 0.012, 0.999, 0.079, -0.026, -0.043, 0.996, 0.134, -0.012, 0.014, 0.991, 0.492,
+        -0.265, -0.034, -0.023, 0.963, 0.385, -0.025, 0.25, -0.198, 0.948, -0.746, 0.319, 0.115, 0.081, 0.937,
+        -0.439
+      ],
+      [
+        -0.038, -0.042, 0.018, 0.016, 0.999, 0.079, -0.025, -0.044, 0.996, 0.094, -0.023, -0.003, 0.995,
+        0.711, -0.243, -0.032, -0.029, 0.969, 0.407, -0.02, 0.251, -0.198, 0.947, -0.789, 0.32, 0.106, 0.077,
+        0.938, -0.471
+      ],
+      [
+        -0.032, -0.041, 0.01, 0.022, 0.999, 0.072, -0.022, -0.046, 0.996, 0.037, -0.025, -0.018, 0.999, 0.925,
+        -0.218, -0.023, -0.036, 0.975, 0.442, -0.008, 0.245, -0.194, 0.95, -0.83, 0.304, 0.073, 0.071, 0.947,
+        -0.486
+      ],
+      [
+        -0.026, -0.037, 0.004, 0.027, 0.999, 0.064, -0.019, -0.05, 0.997, -0.031, -0.033, -0.029, 0.999,
+        1.084, -0.19, -0.014, -0.04, 0.981, 0.45, 0.011, 0.231, -0.185, 0.955, -0.862, 0.273, 0.029, 0.067,
+        0.959, -0.488
+      ],
+      [
+        -0.019, -0.033, -0.003, 0.031, 0.999, 0.06, -0.015, -0.055, 0.997, -0.102, -0.037, -0.031, 0.994,
+        1.176, -0.154, -0.007, -0.041, 0.987, 0.426, 0.031, 0.213, -0.172, 0.961, -0.86, 0.233, -0.027, 0.066,
+        0.97, -0.478
+      ],
+      [
+        -0.012, -0.029, -0.015, 0.032, 0.999, 0.062, -0.004, -0.059, 0.996, -0.162, -0.033, -0.025, 0.986,
+        1.174, -0.119, 0.005, -0.039, 0.992, 0.399, 0.047, 0.195, -0.159, 0.967, -0.824, 0.191, -0.079, 0.071,
+        0.976, -0.462
+      ],
+      [
+        -0.009, -0.026, -0.03, 0.031, 0.999, 0.066, 0.009, -0.06, 0.996, -0.209, -0.019, -0.017, 0.978, 1.089,
+        -0.088, 0.026, -0.035, 0.995, 0.39, 0.063, 0.17, -0.146, 0.973, -0.782, 0.156, -0.125, 0.085, 0.976,
+        -0.483
+      ],
+      [
+        -0.008, -0.024, -0.039, 0.028, 0.999, 0.072, 0.017, -0.056, 0.996, -0.247, -0.001, -0.009, 0.969,
+        0.942, -0.057, 0.053, -0.028, 0.997, 0.381, 0.082, 0.137, -0.133, 0.978, -0.729, 0.128, -0.169, 0.108,
+        0.971, -0.521
+      ],
+      [
+        -0.008, -0.023, -0.044, 0.022, 0.999, 0.074, 0.019, -0.046, 0.996, -0.281, 0.018, -0.003, 0.96, 0.756,
+        -0.028, 0.082, -0.018, 0.996, 0.38, 0.104, 0.1, -0.121, 0.982, -0.67, 0.106, -0.202, 0.139, 0.964,
+        -0.575
+      ],
+      [
+        -0.011, -0.022, -0.045, 0.017, 0.999, 0.073, 0.017, -0.036, 0.997, -0.303, 0.031, -0.001, 0.952,
+        0.544, 0, 0.112, -0.005, 0.994, 0.39, 0.137, 0.062, -0.112, 0.982, -0.625, 0.091, -0.225, 0.172,
+        0.955, -0.65
+      ],
+      [
+        -0.02, -0.023, -0.044, 0.013, 0.999, 0.067, 0.013, -0.029, 0.997, -0.313, 0.047, 0.001, 0.949, 0.384,
+        0.024, 0.13, 0.006, 0.991, 0.417, 0.183, 0.026, -0.107, 0.977, -0.605, 0.085, -0.239, 0.202, 0.946,
+        -0.751
+      ],
+      [
+        -0.035, -0.024, -0.042, 0.01, 0.999, 0.062, 0.009, -0.023, 0.998, -0.334, 0.026, 0.01, 0.942, 0.415,
+        0.039, 0.126, 0.013, 0.991, 0.484, 0.239, -0.004, -0.102, 0.966, -0.629, 0.09, -0.23, 0.234, 0.94,
+        -0.897
+      ],
+      [
+        -0.044, -0.027, -0.037, 0.009, 0.999, 0.063, 0.004, -0.019, 0.998, -0.338, 0.015, 0.019, 0.941, 0.489,
+        0.055, 0.101, 0.013, 0.993, 0.528, 0.286, -0.033, -0.094, 0.953, -0.626, 0.089, -0.215, 0.255, 0.938,
+        -1.001
+      ],
+      [
+        -0.046, -0.032, -0.033, 0.007, 0.999, 0.07, 0.002, -0.019, 0.997, -0.315, 0.02, 0.026, 0.948, 0.508,
+        0.074, 0.08, 0.013, 0.994, 0.546, 0.316, -0.055, -0.083, 0.943, -0.599, 0.088, -0.195, 0.265, 0.94,
+        -1.063
+      ],
+      [
+        -0.044, -0.039, -0.031, 0.005, 0.999, 0.078, 0.003, -0.02, 0.997, -0.292, 0.026, 0.033, 0.955, 0.515,
+        0.081, 0.067, 0.018, 0.994, 0.598, 0.333, -0.062, -0.075, 0.938, -0.565, 0.094, -0.172, 0.26, 0.946,
+        -1.105
+      ],
+      [
+        -0.041, -0.044, -0.025, 0.002, 0.999, 0.082, 0.002, -0.021, 0.996, -0.264, 0.027, 0.041, 0.963, 0.493,
+        0.064, 0.053, 0.022, 0.996, 0.734, 0.341, -0.055, -0.068, 0.936, -0.548, 0.108, -0.145, 0.248, 0.952,
+        -1.143
+      ],
+      [
+        -0.038, -0.046, -0.02, -0.001, 0.999, 0.079, 0, -0.024, 0.997, -0.244, 0.017, 0.046, 0.969, 0.553,
+        0.013, 0.033, 0.023, 0.999, 0.967, 0.333, -0.034, -0.065, 0.94, -0.523, 0.126, -0.131, 0.232, 0.956,
+        -1.156
+      ],
+      [
+        -0.033, -0.044, -0.011, -0.004, 0.999, 0.073, -0.004, -0.021, 0.997, -0.216, 0.014, 0.049, 0.975,
+        0.559, -0.045, 0.024, 0.024, 0.998, 1.15, 0.312, -0.01, -0.067, 0.948, -0.511, 0.139, -0.131, 0.211,
+        0.959, -1.124
+      ],
+      [
+        -0.024, -0.042, 0.002, -0.008, 0.999, 0.072, -0.013, -0.013, 0.997, -0.174, 0.017, 0.052, 0.983,
+        0.498, -0.097, 0.03, 0.025, 0.994, 1.231, 0.278, 0.019, -0.074, 0.958, -0.488, 0.138, -0.14, 0.186,
+        0.963, -1.006
+      ],
+      [
+        -0.015, -0.04, 0.022, -0.01, 0.999, 0.073, -0.028, -0.003, 0.997, -0.13, 0.027, 0.055, 0.99, 0.429,
+        -0.155, 0.035, 0.023, 0.987, 1.252, 0.248, 0.042, -0.083, 0.964, -0.504, 0.127, -0.154, 0.16, 0.967,
+        -0.839
+      ]
+    ]
+  },
+  run: {
+    d: 0.7,
+    f: [
+      [
+        -0.085, 0.105, -0.023, -0.015, 0.994, -0.084, 0.033, 0.022, 0.996, -0.125, 0.006, 0.059, 0.99, 0.832,
+        -0.43, -0.005, 0.009, 0.903, 2.363, -0.071, 0.296, -0.271, 0.913, -1.363, 0.348, -0.051, 0.168, 0.921,
+        -1.428
+      ],
+      [
+        -0.069, 0.105, 0.009, -0.016, 0.994, -0.092, 0.005, 0.018, 0.996, -0.012, -0.036, 0.041, 0.998, 0.654,
+        -0.491, -0.011, 0.011, 0.871, 2.202, -0.217, 0.309, -0.257, 0.889, -1.282, 0.359, -0.064, 0.19, 0.912,
+        -1.402
+      ],
+      [
+        -0.051, 0.104, 0.059, -0.012, 0.993, -0.089, -0.043, 0.013, 0.995, 0.092, -0.105, 0.011, 0.99, 0.458,
+        -0.506, -0.012, 0.001, 0.863, 1.917, -0.299, 0.286, -0.265, 0.871, -1.2, 0.387, -0.079, 0.23, 0.889,
+        -1.457
+      ],
+      [
+        -0.037, 0.104, 0.118, -0.003, 0.988, -0.085, -0.1, 0.005, 0.991, 0.155, -0.147, -0.013, 0.977, 0.386,
+        -0.492, -0.016, -0.012, 0.87, 1.575, -0.32, 0.251, -0.298, 0.864, -1.253, 0.416, -0.088, 0.276, 0.862,
+        -1.6
+      ],
+      [
+        -0.025, 0.104, 0.168, 0.005, 0.98, -0.087, -0.145, -0.007, 0.986, 0.154, -0.106, -0.009, 0.982, 0.546,
+        -0.459, -0.02, -0.022, 0.888, 1.183, -0.326, 0.206, -0.327, 0.863, -1.338, 0.419, -0.088, 0.313,
+        0.848, -1.726
+      ],
+      [
+        -0.018, 0.104, 0.195, 0.008, 0.975, -0.092, -0.167, -0.016, 0.982, 0.132, -0.043, 0.009, 0.99, 0.802,
+        -0.391, 0.003, -0.03, 0.92, 0.727, -0.318, 0.172, -0.339, 0.869, -1.401, 0.39, -0.081, 0.322, 0.859,
+        -1.763
+      ],
+      [
+        -0.025, 0.103, 0.195, 0.006, 0.975, -0.095, -0.161, -0.014, 0.982, 0.094, -0.018, 0.02, 0.995, 1.131,
+        -0.291, 0.074, -0.044, 0.953, 0.292, -0.285, 0.164, -0.329, 0.885, -1.412, 0.36, -0.072, 0.31, 0.877,
+        -1.78
+      ],
+      [
+        -0.046, 0.1, 0.176, 0.003, 0.979, -0.092, -0.139, -0.01, 0.986, 0.053, -0.021, 0.014, 0.998, 1.457,
+        -0.253, 0.103, -0.048, 0.961, 0.298, -0.239, 0.186, -0.317, 0.899, -1.297, 0.318, -0.078, 0.291,
+        0.899, -1.762
+      ],
+      [
+        -0.071, 0.096, 0.155, 0.004, 0.983, -0.083, -0.115, -0.011, 0.99, 0.005, -0.031, -0.012, 0.999, 1.724,
+        -0.305, 0.072, -0.04, 0.949, 0.746, -0.161, 0.23, -0.317, 0.906, -1.175, 0.248, -0.099, 0.259, 0.928,
+        -1.668
+      ],
+      [
+        -0.093, 0.093, 0.142, 0.009, 0.985, -0.073, -0.101, -0.017, 0.992, -0.065, -0.034, -0.04, 0.997,
+        1.918, -0.292, 0.051, -0.043, 0.954, 0.968, -0.055, 0.258, -0.312, 0.913, -1.166, 0.15, -0.129, 0.223,
+        0.954, -1.53
+      ],
+      [
+        -0.1, 0.091, 0.132, 0.016, 0.987, -0.062, -0.092, -0.024, 0.994, -0.159, -0.027, -0.054, 0.985, 1.992,
+        -0.228, 0.041, -0.047, 0.972, 1.008, 0.056, 0.273, -0.308, 0.91, -1.303, 0.039, -0.159, 0.179, 0.97,
+        -1.395
+      ],
+      [
+        -0.092, 0.09, 0.102, 0.022, 0.991, -0.055, -0.07, -0.028, 0.996, -0.257, -0.017, -0.048, 0.965, 1.928,
+        -0.13, 0.042, -0.046, 0.99, 0.908, 0.147, 0.277, -0.306, 0.899, -1.447, -0.047, -0.173, 0.145, 0.973,
+        -1.33
+      ],
+      [
+        -0.065, 0.094, 0.046, 0.023, 0.994, -0.054, -0.024, -0.032, 0.998, -0.325, -0.008, -0.029, 0.945,
+        1.697, -0.031, 0.053, -0.036, 0.997, 0.762, 0.211, 0.267, -0.304, 0.89, -1.63, -0.093, -0.17, 0.132,
+        0.972, -1.321
+      ],
+      [
+        -0.035, 0.102, -0.022, 0.019, 0.994, -0.061, 0.034, -0.032, 0.997, -0.344, 0.004, -0.012, 0.939,
+        1.347, 0.012, 0.042, -0.025, 0.999, 0.704, 0.254, 0.26, -0.305, 0.88, -1.77, -0.094, -0.162, 0.156,
+        0.97, -1.413
+      ],
+      [
+        -0.015, 0.11, -0.081, 0.012, 0.991, -0.072, 0.084, -0.024, 0.994, -0.33, 0.011, 0.002, 0.944, 0.968,
+        0.016, 0.02, -0.03, 0.999, 0.857, 0.298, 0.244, -0.311, 0.869, -1.918, -0.083, -0.147, 0.193, 0.967,
+        -1.564
+      ],
+      [
+        -0.016, 0.115, -0.117, 0.007, 0.986, -0.079, 0.113, -0.015, 0.99, -0.311, 0.017, 0.013, 0.95, 0.642,
+        0.018, -0.007, -0.045, 0.999, 1.086, 0.347, 0.201, -0.319, 0.859, -2.051, -0.096, -0.12, 0.217, 0.964,
+        -1.666
+      ],
+      [
+        -0.03, 0.116, -0.125, 0.005, 0.985, -0.08, 0.118, -0.01, 0.99, -0.296, 0.029, 0.021, 0.955, 0.42,
+        0.011, -0.026, -0.06, 0.998, 1.371, 0.368, 0.137, -0.293, 0.872, -2.128, -0.119, -0.097, 0.227, 0.962,
+        -1.713
+      ],
+      [
+        -0.048, 0.115, -0.106, 0.003, 0.988, -0.079, 0.1, -0.004, 0.992, -0.293, 0.013, 0.033, 0.956, 0.433,
+        -0.019, -0.019, -0.059, 0.998, 1.696, 0.358, 0.086, -0.247, 0.896, -2.115, -0.103, -0.094, 0.218,
+        0.966, -1.765
+      ],
+      [
+        -0.069, 0.113, -0.072, -0.005, 0.991, -0.082, 0.071, 0.009, 0.994, -0.308, -0.007, 0.045, 0.95, 0.674,
+        -0.064, -0.002, -0.034, 0.997, 1.982, 0.312, 0.112, -0.224, 0.916, -2.001, -0.011, -0.11, 0.197,
+        0.974, -1.84
+      ],
+      [
+        -0.087, 0.112, -0.044, -0.013, 0.993, -0.088, 0.047, 0.022, 0.995, -0.293, -0.006, 0.056, 0.954,
+        0.883, -0.149, 0.005, -0.002, 0.989, 2.221, 0.201, 0.187, -0.24, 0.931, -1.767, 0.134, -0.117, 0.176,
+        0.968, -1.839
+      ],
+      [
+        -0.093, 0.11, -0.031, -0.017, 0.993, -0.093, 0.036, 0.027, 0.995, -0.23, 0, 0.061, 0.971, 0.941,
+        -0.287, 0.007, 0.02, 0.958, 2.378, 0.06, 0.245, -0.264, 0.931, -1.544, 0.264, -0.092, 0.165, 0.946,
+        -1.62
+      ]
+    ]
+  }
+};
+var _mqA = new THREE.Quaternion(),
+  _mqB = new THREE.Quaternion(),
+  _mqI = new THREE.Quaternion();
+function mocapPose(u, name, t, blend, armed) {
+  var C = MOCAP[name],
+    n = C.f.length,
+    x = ((((t / C.d) % 1) + 1) % 1) * n,
+    i0 = Math.floor(x) % n,
+    k = x - Math.floor(x),
+    A = C.f[i0],
+    B = C.f[(i0 + 1) % n],
+    tame = u.robe ? (name === 'run' ? 0.62 : 0.45) : 0; // shorter stride inside a thobe or abaya
+  function val(o) {
+    return A[o] + (B[o] - A[o]) * k;
+  }
+  function rot(o, obj, damp) {
+    _mqA.set(A[o], A[o + 1], A[o + 2], A[o + 3]);
+    _mqB.set(B[o], B[o + 1], B[o + 2], B[o + 3]);
+    _mqA.slerp(_mqB, k);
+    if (damp) _mqA.slerp(_mqI, damp);
+    obj.quaternion.slerp(_mqA, blend);
+  }
+  function hinge(o, obj, damp) {
+    obj.rotation.x += (val(o) * (1 - damp) - obj.rotation.x) * blend;
+  }
+  u.root.position.y += (val(0) - u.root.position.y) * blend;
+  rot(1, u.torso);
+  rot(5, u.head);
+  rot(9, u.legL.p, tame);
+  hinge(13, u.legL.j, tame);
+  rot(14, u.legR.p, tame);
+  hinge(18, u.legR.j, tame);
+  if (!armed) {
+    rot(19, u.armL.p);
+    hinge(23, u.armL.j, 0);
+    rot(24, u.armR.p);
+    hinge(28, u.armR.j, 0);
+  }
+}
+// hit reaction: knees buckle, the body slumps, then tips over (fall runs 0 -> 1)
+function deathPose(g, fall, fdir) {
+  var u = g.userData,
+    k = Math.min(1, fall * 2.2),
+    kk = k * k * (3 - 2 * k),
+    tip = clamp((fall - 0.25) / 0.75, 0, 1),
+    e = 1 - Math.pow(1 - tip, 3);
+  g.rotation.x = -e * 1.42 * fdir;
+  if (!u.legL) {
+    u.root.position.y = -e * 0.05;
+    return;
+  }
+  u.legL.p.quaternion.identity();
+  u.legR.p.quaternion.identity();
+  u.legL.p.rotation.x = -kk * 0.75;
+  u.legR.p.rotation.x = -kk * 0.5;
+  u.legL.j.rotation.x = kk * 1.35;
+  u.legR.j.rotation.x = kk * 1.05;
+  u.root.position.y = -kk * 0.24 - e * 0.04;
+  u.torso.quaternion.identity();
+  u.torso.rotation.x = -kk * 0.25 * fdir;
+  u.head.quaternion.identity();
+  u.head.rotation.x = -kk * 0.3 * fdir;
+  if (!u.armed) {
+    u.armL.p.quaternion.identity();
+    u.armR.p.quaternion.identity();
+    u.armL.p.rotation.set(-kk * 0.5, 0, -0.1 - kk * 0.5);
+    u.armR.p.rotation.set(-kk * 0.3, 0, 0.1 + kk * 0.6);
+    u.armL.j.rotation.x = -kk * 0.6;
+    u.armR.j.rotation.x = -kk * 0.4;
+  }
+}
+// idle / walk / run driven by phase; armed people keep their arms on the rifle
 function animPerson(g, mode, ph, dt, foe) {
   var u = g.userData;
-  if (!u.legL) return;
-  var armed = u.armed !== undefined ? u.armed : foe;
-  if (mode === 'walk') {
-    var s = Math.sin(ph),
-      c = Math.cos(ph);
-    var st = u.robe ? 0.24 : 0.5;
-    u.legL.p.rotation.x = s * st;
-    u.legR.p.rotation.x = -s * st;
-    u.legL.j.rotation.x = Math.max(0, -c) * st * 1.4;
-    u.legR.j.rotation.x = Math.max(0, c) * st * 1.4;
-    u.root.position.y = Math.abs(c) * 0.03;
-    if (!armed) {
-      u.armL.p.rotation.x = -s * 0.4;
-      u.armR.p.rotation.x = s * 0.4;
-      u.armL.j.rotation.x = -0.25;
-      u.armR.j.rotation.x = -0.25;
-    }
-    if (u.robe) u.robe.rotation.z = s * 0.03;
-    u.torso.rotation.y = s * 0.06;
-    u.head.rotation.y = -s * 0.04;
-  } else {
-    var k = Math.min(1, dt * 6);
-    u.legL.p.rotation.x *= 1 - k;
-    u.legR.p.rotation.x *= 1 - k;
-    u.legL.j.rotation.x *= 1 - k;
-    u.legR.j.rotation.x *= 1 - k;
-    u.root.position.y = Math.sin(ph * 0.35) * 0.006;
-    if (!armed) {
-      u.armL.p.rotation.x *= 1 - k;
-      u.armR.p.rotation.x *= 1 - k;
-      u.armL.j.rotation.x = -0.12 + Math.sin(ph * 0.35) * 0.02;
-      u.armR.j.rotation.x = -0.12 - Math.sin(ph * 0.35) * 0.02;
-    }
-    u.torso.rotation.y *= 1 - k;
-    u.head.rotation.y = Math.sin(ph * 0.21) * 0.25;
-    if (u.robe) u.robe.rotation.z *= 1 - k;
+  if (u.mixer) {
+    soldierAnim(u, mode, ph, dt);
+    return;
   }
+  if (!u.legL) return;
+  var armed = u.armed !== undefined ? u.armed : foe,
+    blend = Math.min(1, dt * 10);
+  if (mode === 'walk' || mode === 'run')
+    mocapPose(u, mode, (ph / (Math.PI * 2)) * MOCAP[mode].d, blend, armed);
+  else mocapPose(u, 'idle', ph * 0.5, blend, armed);
 }
 
 /* ---------- weapons: detailed procedural rifle models (first-person and armory preview) ---------- */
@@ -4468,10 +5746,8 @@ function animateTargets(sdt, dt) {
     if (t.kind === 'p') return;
     var g = t.grp;
     if (!t.alive) {
-      t.fall = Math.min(1, t.fall + sdt * 2.4);
-      var e = 1 - Math.pow(1 - t.fall, 3);
-      g.rotation.x = -e * 1.42 * t.fdir;
-      g.userData.root.position.y = -e * 0.05;
+      t.fall = Math.min(1, t.fall + sdt * 1.9);
+      deathPose(g, t.fall, t.fdir);
       return;
     }
     var toCam = Math.atan2(S.ox - t.px, S.oz - t.pz);
@@ -4509,7 +5785,7 @@ function animateTargets(sdt, dt) {
       }
     }
     g.rotation.y = t.hd;
-    animPerson(g, t.mode === 'walk' ? 'walk' : 'idle', t.ph, sdt, t.kind === 'e');
+    animPerson(g, t.mode === 'walk' ? (t.alert > 0 ? 'run' : 'walk') : 'idle', t.ph, sdt, t.kind === 'e');
   });
 }
 function enemiesLeft() {
@@ -5188,11 +6464,13 @@ function txt(s, x, y, size, col, al) {
   ctx.font = '700 ' + size + 'px Tajawal, "Segoe UI", Tahoma, sans-serif';
   ctx.textAlign = al || 'center';
   ctx.textBaseline = 'middle';
-  ctx.shadowColor = 'rgba(0,0,0,.85)';
-  ctx.shadowBlur = 3;
+  // dark outline keeps HUD text readable over the bright, colourful scenery
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = Math.max(2.5, size * 0.22);
+  ctx.strokeStyle = 'rgba(20,12,8,.85)';
+  ctx.strokeText(s, x, y);
   ctx.fillStyle = col;
   ctx.fillText(s, x, y);
-  ctx.shadowBlur = 0;
 }
 function nearest() {
   var best = null,
