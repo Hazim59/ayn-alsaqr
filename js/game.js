@@ -49,6 +49,8 @@ import { Pass, FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 
 const SH = window.SH;
 SH.progress(0.15);
@@ -2695,6 +2697,87 @@ function skAttach(g, u, female, cols) {
   });
 }
 
+/* extra fighter look: the Soldier model from the three.js examples (Mixamo character and clips).
+   Loaded in the background; until it arrives every fighter uses the sculpted look. */
+var SOLDIER = null;
+new GLTFLoader().load(
+  'assets/models/soldier.glb',
+  function (gl) {
+    var m = gl.scene;
+    m.traverse(function (o) {
+      if (!o.isMesh) return;
+      o.material = toon({ map: o.material.map, color: 0xffffff });
+      o.castShadow = true;
+      o.frustumCulled = false;
+    });
+    m.updateMatrixWorld(true);
+    var bx = new THREE.Box3().setFromObject(m),
+      sc = 1.78 / (bx.max.y - bx.min.y);
+    var clip = function (n) {
+      return gl.animations.filter(function (a) {
+        return a.name === n;
+      })[0];
+    };
+    SOLDIER = {
+      scene: m,
+      s: sc,
+      oy: -bx.min.y * sc,
+      clips: { idle: clip('Idle'), walk: clip('Walk'), run: clip('Run') }
+    };
+  },
+  undefined,
+  function () {}
+);
+var SOLDIER_SHARE = 0.5; // share of armed fighters drawn with the Soldier model once it is loaded
+function mkSoldier() {
+  var g = new THREE.Group(),
+    root = new THREE.Group(),
+    u = { armed: true, root: root };
+  g.add(root);
+  var m = SkeletonUtils.clone(SOLDIER.scene);
+  m.scale.setScalar(SOLDIER.s);
+  m.position.y = SOLDIER.oy;
+  m.rotation.y = Math.PI; // the model faces -z; people in the game face +z
+  root.add(m);
+  u.mixer = new THREE.AnimationMixer(m);
+  u.acts = {};
+  for (var k in SOLDIER.clips) if (SOLDIER.clips[k]) u.acts[k] = u.mixer.clipAction(SOLDIER.clips[k]);
+  u.cur = '';
+  // carry a rifle in the right hand
+  var hand = m.getObjectByName('mixamorigRightHand');
+  if (hand) {
+    g.updateMatrixWorld(true);
+    var ws = new THREE.Vector3();
+    hand.getWorldScale(ws);
+    var rf = new THREE.Mesh(PG.rifle, MP_RIFLE);
+    rf.scale.setScalar(1 / ws.x);
+    rf.position.set(0, 0.08 / ws.x, 0.02 / ws.x);
+    rf.rotation.set(-Math.PI / 2, 0, 0);
+    rf.castShadow = true;
+    hand.add(rf);
+    u.rifle = rf;
+  }
+  var blob = new THREE.Mesh(PG.blob, MATS.blob);
+  blob.rotation.x = -Math.PI / 2;
+  u.blob = blob;
+  g.rotation.order = 'YXZ';
+  g.userData = u;
+  return g;
+}
+function soldierAnim(u, mode, ph, dt) {
+  var want = u.acts[mode] ? mode : 'idle',
+    a = u.acts[want];
+  if (!a) return;
+  if (u.cur !== want) {
+    var old = u.acts[u.cur];
+    a.reset().play();
+    if (old && dt < 1) a.crossFadeFrom(old, 0.25, false);
+    else if (old) old.stop();
+    u.cur = want;
+  }
+  if (dt >= 1) a.time = ((ph / (Math.PI * 2)) % 1) * a.getClip().duration; // still frames (previews)
+  u.mixer.update(dt >= 1 ? 0 : dt);
+}
 // kind: 'e' enemy, 'c' civilian / hostage / VIP / player look.
 // An enemy given civilian clothes (o.shirt) is the disguised wanted man: no gear, no rifle.
 function mkPerson(kind, r, o) {
@@ -2827,6 +2910,8 @@ function mkPerson(kind, r, o) {
   u.blob = blob;
   g.rotation.order = 'YXZ';
   g.userData = u;
+  // swap in the Soldier after the normal build, so the world RNG sequence is identical on every client
+  if (armed && SOLDIER && !o.noSoldier && Math.random() < SOLDIER_SHARE) return mkSoldier();
   return g;
 }
 /* motion-captured idle / walk / run, retargeted from the three.js Xbot example (Mixamo clips).
@@ -3441,6 +3526,10 @@ function mocapPose(u, name, t, blend, armed) {
 // idle / walk / run driven by phase; armed people keep their arms on the rifle
 function animPerson(g, mode, ph, dt, foe) {
   var u = g.userData;
+  if (u.mixer) {
+    soldierAnim(u, mode, ph, dt);
+    return;
+  }
   if (!u.legL) return;
   var armed = u.armed !== undefined ? u.armed : foe,
     blend = Math.min(1, dt * 10);
