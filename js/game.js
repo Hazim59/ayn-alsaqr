@@ -2052,11 +2052,11 @@ function limb(parent, x, y, z, segA, segB, lenA, matA, matB, end, endMat) {
   var p = new THREE.Group();
   p.position.set(x, y, z);
   parent.add(p);
-  addM(p, segA, matA, 0, -lenA / 2, 0);
+  if (segA) addM(p, segA, matA, 0, -lenA / 2, 0);
   var j = new THREE.Group();
   j.position.set(0, -lenA, 0);
   p.add(j);
-  addM(j, segB, matB, 0, -lenA / 2 + 0.01, 0);
+  if (segB) addM(j, segB, matB, 0, -lenA / 2 + 0.01, 0);
   if (end) addM(j, end, endMat, 0, -lenA - 0.03, end === PG.boot ? 0.05 : 0);
   return { p: p, j: j };
 }
@@ -2256,18 +2256,20 @@ function addBisht(root, u, hmat) {
 
 // one merged, vertex-coloured head per look (face, ears, beard, hair); cached and shared
 var HEADS = {};
-function headGeo(skin, hair, beard, ears, hairCap, female) {
-  var key = [skin, hair, beard, ears, hairCap, female].join('|');
+function headGeo(skin, hair, beard, ears, hairCap, female, feat) {
+  var key = [skin, hair, beard, ears, hairCap, female, feat].join('|');
   if (HEADS[key]) return HEADS[key];
   var b = new Bucket(),
     sk = new THREE.Color(skin),
     shade = sk.clone().multiplyScalar(0.86).getHex(),
     lip = sk.clone().lerp(new THREE.Color(0x8a3a32), 0.45).getHex();
-  b.add(PG.head, null, 0, 0, 0, 0, 0.93, 1.06, 1, skin);
-  if (female) b.add(PG.head, null, 0, -0.04, 0.008, 0, 0.7, 0.62, 0.82, skin);
-  else b.add(PG.head, null, 0, -0.046, 0.012, 0, 0.74, 0.6, 0.76, skin);
-  b.add(PG.nose, null, 0, -0.012, 0.118, 0, 1, 1, 1, shade, Math.PI / 2);
-  if (ears)
+  if (!feat) {
+    b.add(PG.head, null, 0, 0, 0, 0, 0.93, 1.06, 1, skin);
+    if (female) b.add(PG.head, null, 0, -0.04, 0.008, 0, 0.7, 0.62, 0.82, skin);
+    else b.add(PG.head, null, 0, -0.046, 0.012, 0, 0.74, 0.6, 0.76, skin);
+    b.add(PG.nose, null, 0, -0.012, 0.118, 0, 1, 1, 1, shade, Math.PI / 2);
+  }
+  if (ears && !feat)
     [-1, 1].forEach(function (s) {
       b.add(PG.eye, null, s * 0.106, -0.004, 0.002, 0, 1.2, 2.4, 1.6, shade);
     });
@@ -2296,6 +2298,403 @@ function headGeo(skin, hair, beard, ears, hairCap, female) {
   return (HEADS[key] = g);
 }
 
+/* ---------- sculpted bodies: one continuous skinned mesh per body type ----------
+   The body is a signed distance field of smoothly blended capsules and ellipsoids
+   (rest pose, person space), meshed once with surface nets and skinned to the same
+   joint groups the walk / aim / fall animations already move. */
+var SK_REG = { skin: 0, top: 1, bottom: 2, shoes: 3, hands: 4 };
+var SK_BONES = ['root', 'torso', 'head', 'uaL', 'faL', 'uaR', 'faR', 'thL', 'shL', 'thR', 'shR'];
+var SK_HEAD = new THREE.Vector3(0, 1.68, 0),
+  SK_HS = 1.07; // head group position and scale in person space
+function skPrims(female) {
+  var P = [],
+    V = THREE.Vector3,
+    lm = female ? 0.88 : 1;
+  function cap(a, b, ra, rb, bone, reg, k, flat) {
+    P.push({ t: 0, a: a, b: b, ra: ra, rb: rb, bone: bone, reg: reg, k: k || 0.03, flat: flat });
+  }
+  function ell(c, rx, ry, rz, bone, reg, k) {
+    P.push({ t: 1, c: c, r: new V(rx, ry, rz), bone: bone, reg: reg, k: k || 0.03 });
+  }
+  function hp(x, y, z) {
+    return SK_HEAD.clone().add(new V(x, y, z).multiplyScalar(SK_HS));
+  }
+  // head: skull, jaw, cheeks, brow, nose, ears, chin (head-local numbers match the face features)
+  ell(hp(0, 0, 0), 0.107 * SK_HS, 0.122 * SK_HS, 0.115 * SK_HS, 'head', 'skin', 0.02);
+  if (female) ell(hp(0, -0.04, 0.008), 0.0805 * SK_HS, 0.0713 * SK_HS, 0.0943 * SK_HS, 'head', 'skin', 0.03);
+  else ell(hp(0, -0.046, 0.012), 0.088 * SK_HS, 0.07 * SK_HS, 0.09 * SK_HS, 'head', 'skin', 0.03);
+  [-1, 1].forEach(function (s) {
+    ell(hp(s * 0.052, -0.02, 0.072), 0.034 * SK_HS, 0.026 * SK_HS, 0.03 * SK_HS, 'head', 'skin', 0.02);
+    ell(hp(s * 0.107, -0.004, 0.0), 0.014 * SK_HS, 0.032 * SK_HS, 0.022 * SK_HS, 'head', 'skin', 0.008);
+  });
+  cap(hp(-0.04, 0.038, 0.098), hp(0.04, 0.038, 0.098), 0.012 * SK_HS, 0.012 * SK_HS, 'head', 'skin', 0.016);
+  cap(hp(0, 0.004, 0.108), hp(0, -0.024, 0.126), 0.011 * SK_HS, 0.017 * SK_HS, 'head', 'skin', 0.012);
+  if (!female) ell(hp(0, -0.09, 0.06), 0.032 * SK_HS, 0.022 * SK_HS, 0.026 * SK_HS, 'head', 'skin', 0.016);
+  // neck and torso
+  cap(new V(0, 1.44, -0.006), new V(0, 1.62, 0), 0.06 * lm, 0.05 * lm, 'torso', 'skin', 0.03);
+  ell(new V(0, 0.97, 0), female ? 0.17 : 0.155, 0.12, female ? 0.11 : 0.105, 'root', 'bottom', 0.04);
+  cap(
+    new V(0, 1.0, 0),
+    new V(0, 1.22, 0.01),
+    female ? 0.12 : 0.13,
+    female ? 0.125 : 0.145,
+    'torso',
+    'top',
+    0.05
+  );
+  ell(
+    new V(0, 1.32, 0.012),
+    female ? 0.162 : 0.185,
+    female ? 0.14 : 0.15,
+    female ? 0.102 : 0.11,
+    'torso',
+    'top',
+    0.05
+  );
+  if (female)
+    [-1, 1].forEach(function (s) {
+      ell(new V(s * 0.056, 1.3, 0.068), 0.058, 0.052, 0.048, 'torso', 'top', 0.03);
+    });
+  cap(
+    new V(-0.13 * lm, 1.455, -0.012),
+    new V(0.13 * lm, 1.455, -0.012),
+    0.056 * lm,
+    0.056 * lm,
+    'torso',
+    'top',
+    0.05
+  );
+  // arms (rest pose hangs slightly outward, matching the arm groups)
+  [-1, 1].forEach(function (s) {
+    var ua = s < 0 ? 'uaL' : 'uaR',
+      fa = s < 0 ? 'faL' : 'faR',
+      dir = new V(s * Math.sin(0.1), -Math.cos(0.1), 0),
+      sh = new V(s * 0.235, 1.47, 0),
+      el = sh.clone().addScaledVector(dir, 0.3),
+      wr = el.clone().addScaledVector(dir, 0.27),
+      hc = el.clone().addScaledVector(dir, 0.335);
+    ell(new V(s * 0.228, 1.448, 0), 0.07 * lm, 0.074 * lm, 0.066 * lm, ua, 'top', 0.04);
+    cap(sh, el, 0.055 * lm, 0.043 * lm, ua, 'top', 0.03);
+    cap(el, wr, 0.045 * lm, 0.033 * lm, fa, 'top', 0.022);
+    ell(hc, 0.03 * lm, 0.058 * lm, 0.045 * lm, fa, 'hands', 0.016);
+    cap(
+      wr.clone().add(new V(-s * 0.004, -0.024, 0.026)),
+      wr.clone().add(new V(-s * 0.012, -0.066, 0.042)),
+      0.012 * lm,
+      0.011 * lm,
+      fa,
+      'hands',
+      0.012
+    );
+    // legs
+    var th = s < 0 ? 'thL' : 'thR',
+      sk = s < 0 ? 'shL' : 'shR',
+      x = s * 0.1;
+    ell(new V(s * 0.072, 0.93, -0.05), female ? 0.09 : 0.084, 0.085, 0.072, 'root', 'bottom', 0.04);
+    cap(new V(x, 0.95, 0), new V(x, 0.48, 0.005), 0.086 * lm, 0.058 * lm, th, 'bottom', 0.04);
+    cap(new V(x, 0.48, 0.005), new V(x, 0.075, -0.005), 0.056 * lm, 0.037 * lm, sk, 'bottom', 0.025);
+    ell(new V(x, 0.33, -0.026), 0.05 * lm, 0.1, 0.052 * lm, sk, 'bottom', 0.03);
+    cap(new V(x, 0.045, -0.045), new V(x, 0.04, 0.13), 0.05 * lm, 0.043 * lm, sk, 'shoes', 0.02, true);
+  });
+  P.forEach(function (p) {
+    var lo, hi, m;
+    if (p.t === 0) {
+      m = Math.max(p.ra, p.rb) + p.k;
+      lo = p.a.clone().min(p.b).subScalar(m);
+      hi = p.a.clone().max(p.b).addScalar(m);
+      p.ba = p.b.clone().sub(p.a);
+      p.bb = p.ba.lengthSq();
+    } else {
+      lo = p.c.clone().sub(p.r).subScalar(p.k);
+      hi = p.c.clone().add(p.r).addScalar(p.k);
+    }
+    p.lo = lo;
+    p.hi = hi;
+  });
+  return P;
+}
+function skDist(p, x, y, z) {
+  var d;
+  if (p.t === 0) {
+    var px = x - p.a.x,
+      py = y - p.a.y,
+      pz = z - p.a.z,
+      t = clamp((px * p.ba.x + py * p.ba.y + pz * p.ba.z) / p.bb, 0, 1),
+      qx = px - p.ba.x * t,
+      qy = py - p.ba.y * t,
+      qz = pz - p.ba.z * t;
+    d = Math.sqrt(qx * qx + qy * qy + qz * qz) - (p.ra + (p.rb - p.ra) * t);
+    if (p.flat) d = Math.max(d, -y);
+  } else {
+    var ex = (x - p.c.x) / p.r.x,
+      ey = (y - p.c.y) / p.r.y,
+      ez = (z - p.c.z) / p.r.z,
+      k0 = Math.sqrt(ex * ex + ey * ey + ez * ez),
+      fx = ex / p.r.x,
+      fy = ey / p.r.y,
+      fz = ez / p.r.z,
+      k1 = Math.sqrt(fx * fx + fy * fy + fz * fz);
+    d = k1 > 1e-9 ? (k0 * (k0 - 1)) / k1 : -Math.min(p.r.x, p.r.y, p.r.z);
+  }
+  return d;
+}
+function skField(P, x, y, z) {
+  var d = 1e9;
+  for (var i = 0; i < P.length; i++) {
+    var p = P[i];
+    if (x < p.lo.x || y < p.lo.y || z < p.lo.z || x > p.hi.x || y > p.hi.y || z > p.hi.z) continue;
+    var di = skDist(p, x, y, z);
+    if (d === 1e9) d = di;
+    else {
+      var h = Math.max(p.k - Math.abs(d - di), 0) / p.k;
+      d = Math.min(d, di) - h * h * p.k * 0.25;
+    }
+  }
+  return d === 1e9 ? 0.1 : d;
+}
+// naive surface nets: one vertex per surface cell, one quad per sign-changing grid edge
+function skNets(f, ox, oy, oz, h, nx, ny, nz) {
+  var V = new Float32Array(nx * ny * nz),
+    x,
+    y,
+    z,
+    i = 0;
+  for (z = 0; z < nz; z++)
+    for (y = 0; y < ny; y++) for (x = 0; x < nx; x++) V[i++] = f(ox + x * h, oy + y * h, oz + z * h);
+  var gi = function (x, y, z) {
+    return x + nx * (y + ny * z);
+  };
+  var cx = nx - 1,
+    cy = ny - 1,
+    cz = nz - 1,
+    C = new Int32Array(cx * cy * cz).fill(-1),
+    pos = [],
+    idx = [];
+  var E = [
+    [0, 1],
+    [2, 3],
+    [4, 5],
+    [6, 7],
+    [0, 2],
+    [1, 3],
+    [4, 6],
+    [5, 7],
+    [0, 4],
+    [1, 5],
+    [2, 6],
+    [3, 7]
+  ];
+  var cv = new Float32Array(8);
+  for (z = 0; z < cz; z++)
+    for (y = 0; y < cy; y++)
+      for (x = 0; x < cx; x++) {
+        var m = 0;
+        for (var c = 0; c < 8; c++) {
+          cv[c] = V[gi(x + (c & 1), y + ((c >> 1) & 1), z + ((c >> 2) & 1))];
+          if (cv[c] < 0) m |= 1 << c;
+        }
+        if (m === 0 || m === 255) continue;
+        var sx = 0,
+          sy = 0,
+          sz = 0,
+          n = 0;
+        for (var e = 0; e < 12; e++) {
+          var a = E[e][0],
+            b = E[e][1];
+          if (cv[a] < 0 === cv[b] < 0) continue;
+          var t = cv[a] / (cv[a] - cv[b]);
+          sx += (a & 1) + ((b & 1) - (a & 1)) * t;
+          sy += ((a >> 1) & 1) + (((b >> 1) & 1) - ((a >> 1) & 1)) * t;
+          sz += ((a >> 2) & 1) + (((b >> 2) & 1) - ((a >> 2) & 1)) * t;
+          n++;
+        }
+        C[x + cx * (y + cy * z)] = pos.length / 3;
+        pos.push(ox + (x + sx / n) * h, oy + (y + sy / n) * h, oz + (z + sz / n) * h);
+      }
+  var dims = [nx, ny, nz];
+  var cell = function (q) {
+    return C[q[0] + cx * (q[1] + cy * q[2])];
+  };
+  for (z = 0; z < nz; z++)
+    for (y = 0; y < ny; y++)
+      for (x = 0; x < nx; x++) {
+        var P0 = [x, y, z],
+          v0 = V[gi(x, y, z)];
+        for (var ax = 0; ax < 3; ax++) {
+          var u = (ax + 1) % 3,
+            w = (ax + 2) % 3;
+          if (P0[ax] >= dims[ax] - 1 || P0[u] < 1 || P0[w] < 1 || P0[u] > dims[u] - 2 || P0[w] > dims[w] - 2)
+            continue;
+          var P1 = P0.slice();
+          P1[ax]++;
+          if (v0 < 0 === V[gi(P1[0], P1[1], P1[2])] < 0) continue;
+          var q0 = P0.slice(),
+            q1 = P0.slice(),
+            q2 = P0.slice(),
+            q3 = P0.slice();
+          q1[u]--;
+          q2[u]--;
+          q2[w]--;
+          q3[w]--;
+          var A = cell(q0),
+            B = cell(q1),
+            Cc = cell(q2),
+            D = cell(q3);
+          if (A < 0 || B < 0 || Cc < 0 || D < 0) continue;
+          idx.push(A, B, Cc, A, Cc, D);
+        }
+      }
+  return { pos: pos, idx: idx };
+}
+function skBuild(P, box, h, cut) {
+  var f = function (x, y, z) {
+      var d = skField(P, x, y, z);
+      return cut ? Math.max(d, cut(y)) : d;
+    },
+    nx = Math.ceil((box[3] - box[0]) / h) + 1,
+    ny = Math.ceil((box[4] - box[1]) / h) + 1,
+    nz = Math.ceil((box[5] - box[2]) / h) + 1;
+  var r = skNets(f, box[0], box[1], box[2], h, nx, ny, nz),
+    nv = r.pos.length / 3,
+    nor = new Float32Array(nv * 3),
+    uv = new Float32Array(nv * 2),
+    si = new Uint16Array(nv * 4),
+    sw = new Float32Array(nv * 4),
+    e = h * 0.35;
+  for (var i = 0; i < nv; i++) {
+    var x = r.pos[i * 3],
+      y = r.pos[i * 3 + 1],
+      z = r.pos[i * 3 + 2];
+    var gx = f(x + e, y, z) - f(x - e, y, z),
+      gy = f(x, y + e, z) - f(x, y - e, z),
+      gz = f(x, y, z + e) - f(x, y, z - e),
+      gl = Math.hypot(gx, gy, gz) || 1;
+    nor[i * 3] = gx / gl;
+    nor[i * 3 + 1] = gy / gl;
+    nor[i * 3 + 2] = gz / gl;
+    // region from the nearest part; weights from the two nearest bones (blend at joints)
+    var best = 1e9,
+      reg = 0,
+      bd = {};
+    P.forEach(function (p) {
+      var d = skDist(p, x, y, z);
+      if (d < best) {
+        best = d;
+        reg = SK_REG[p.reg];
+      }
+      if (bd[p.bone] === undefined || d < bd[p.bone]) bd[p.bone] = d;
+    });
+    var ks = Object.keys(bd).sort(function (a, b) {
+        return bd[a] - bd[b];
+      }),
+      t = ks.length > 1 ? clamp((bd[ks[1]] - bd[ks[0]]) / 0.05, 0, 1) : 1,
+      w1 = 0.5 + 0.5 * t;
+    si[i * 4] = SK_BONES.indexOf(ks[0]);
+    si[i * 4 + 1] = ks.length > 1 ? SK_BONES.indexOf(ks[1]) : 0;
+    sw[i * 4] = w1;
+    sw[i * 4 + 1] = ks.length > 1 ? 1 - w1 : 0;
+    uv[i * 2] = (reg + 0.5) / 5;
+    uv[i * 2 + 1] = 0.5;
+  }
+  // wind every quad so it faces along the field gradient
+  var I = r.idx;
+  for (var k = 0; k < I.length; k += 3) {
+    var a = I[k],
+      b = I[k + 1],
+      c = I[k + 2];
+    var ux = r.pos[b * 3] - r.pos[a * 3],
+      uy = r.pos[b * 3 + 1] - r.pos[a * 3 + 1],
+      uz = r.pos[b * 3 + 2] - r.pos[a * 3 + 2],
+      vx = r.pos[c * 3] - r.pos[a * 3],
+      vy = r.pos[c * 3 + 1] - r.pos[a * 3 + 1],
+      vz = r.pos[c * 3 + 2] - r.pos[a * 3 + 2];
+    var fnx = uy * vz - uz * vy,
+      fny = uz * vx - ux * vz,
+      fnz = ux * vy - uy * vx;
+    if (
+      fnx * (nor[a * 3] + nor[b * 3] + nor[c * 3]) +
+        fny * (nor[a * 3 + 1] + nor[b * 3 + 1] + nor[c * 3 + 1]) +
+        fnz * (nor[a * 3 + 2] + nor[b * 3 + 2] + nor[c * 3 + 2]) <
+      0
+    ) {
+      I[k + 1] = c;
+      I[k + 2] = b;
+    }
+  }
+  var g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(r.pos, 3));
+  g.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+  g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  g.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(si, 4));
+  g.setAttribute('skinWeight', new THREE.BufferAttribute(sw, 4));
+  g.setIndex(I);
+  g.computeBoundingSphere();
+  return g;
+}
+var SK_GEO = {};
+function skGeo(female) {
+  var key = female ? 'f' : 'm';
+  if (SK_GEO[key]) return SK_GEO[key];
+  var P = skPrims(female);
+  return (SK_GEO[key] = {
+    body: skBuild(P, [-0.37, -0.02, -0.17, 0.37, 1.61, 0.2], 0.021, function (y) {
+      return y - 1.6;
+    }),
+    head: skBuild(P, [-0.15, 1.53, -0.16, 0.15, 1.85, 0.18], 0.0095, function (y) {
+      return 1.545 - y;
+    })
+  });
+}
+var SK_MAT = {};
+function skMat(cols) {
+  var key = cols.join(',');
+  if (SK_MAT[key]) return SK_MAT[key];
+  var d = new Uint8Array(20);
+  cols.forEach(function (hex, i) {
+    d[i * 4] = (hex >> 16) & 255;
+    d[i * 4 + 1] = (hex >> 8) & 255;
+    d[i * 4 + 2] = hex & 255;
+    d[i * 4 + 3] = 255;
+  });
+  var t = new THREE.DataTexture(d, 5, 1);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.minFilter = t.magFilter = THREE.NearestFilter;
+  t.needsUpdate = true;
+  return (SK_MAT[key] = toon({ map: t }));
+}
+// attach the sculpted body to a person's joint groups (call while they are in rest pose)
+function skAttach(g, u, female, cols) {
+  var bones = [
+    u.root,
+    u.torso,
+    u.head,
+    u.armL.p,
+    u.armL.j,
+    u.armR.p,
+    u.armR.j,
+    u.legL.p,
+    u.legL.j,
+    u.legR.p,
+    u.legR.j
+  ].map(function (grp) {
+    var b = new THREE.Bone();
+    grp.add(b);
+    return b;
+  });
+  g.updateMatrixWorld(true);
+  var sk = new THREE.Skeleton(bones),
+    geo = skGeo(female),
+    mat = skMat(cols),
+    id = new THREE.Matrix4();
+  [geo.body, geo.head].forEach(function (gg) {
+    var m = new THREE.SkinnedMesh(gg, mat);
+    m.bind(sk, id);
+    m.castShadow = true;
+    m.frustumCulled = false;
+    g.add(m);
+  });
+}
+
 // kind: 'e' enemy, 'c' civilian / hostage / VIP / player look.
 // An enemy given civilian clothes (o.shirt) is the disguised wanted man: no gear, no rifle.
 function mkPerson(kind, r, o) {
@@ -2310,26 +2709,19 @@ function mkPerson(kind, r, o) {
     skin = pmat(skinHex, 0.62);
   var robe = !armed && (o.thobe !== undefined ? o.thobe : r() < 0.55);
   var female = o.hat === 'shayla';
-  var cloth = armed
-    ? MP_CAMO
+  var topHex = armed
+    ? 0x8c7a56
     : robe
-      ? pmat(o.robe || 0xf2f0e8, 0.86)
-      : o.shirt
-        ? pmat(o.shirt, 0.8)
-        : pmat([0x2f6fb8, 0xd8ccb0, 0x4f8a5a, 0xa8743f, 0xcfcfcf][Math.floor(r() * 5)], 0.8);
-  var pants = armed ? MP_CAMO : pmat([0x2b3342, 0x5a5148, 0x3a3a3a][Math.floor(r() * 3)], 0.88),
-    shoe = robe && !o.bisht ? pmat(0x5a3a22, 0.7) : pmat(0x141212, 0.5),
-    glove = pmat(0x24221e, 0.8);
+      ? o.robe || 0xf2f0e8
+      : o.shirt || [0x2f6fb8, 0xd8ccb0, 0x4f8a5a, 0xa8743f, 0xcfcfcf][Math.floor(r() * 5)];
+  var botHex = armed ? 0x6f6248 : robe ? topHex : [0x2b3342, 0x5a5148, 0x3a3a3a][Math.floor(r() * 3)];
+  var cloth = pmat(topHex, 0.8),
+    shoeHex = robe && !o.bisht ? 0x5a3a22 : 0x141212;
   var root = new THREE.Group();
   g.add(root);
   u.root = root;
-  var foot = robe ? PG.boot : PG.boot;
-  u.legL = limb(root, -0.1, 0.92, 0, PG.thigh, PG.shin, 0.44, pants, pants, foot, shoe);
-  u.legR = limb(root, 0.1, 0.92, 0, PG.thigh, PG.shin, 0.44, pants, pants, foot, shoe);
-  if (robe)
-    [u.legL, u.legR].forEach(function (l) {
-      l.j.children[1].scale.set(1, 0.6, 0.95);
-    });
+  u.legL = limb(root, -0.1, 0.92, 0, null, null, 0.44);
+  u.legR = limb(root, 0.1, 0.92, 0, null, null, 0.44);
   var torso = new THREE.Group();
   torso.position.y = 0.92;
   root.add(torso);
@@ -2344,14 +2736,9 @@ function mkPerson(kind, r, o) {
       addM(torso, PG2.collar, cloth, 0, 0.645, 0.004);
     }
   } else {
-    addM(torso, PG2.torso, cloth, 0, 0, 0);
-    [-1, 1].forEach(function (s) {
-      addM(torso, PG2.shoulder, cloth, s * 0.2, 0.535, 0);
-    });
-    addM(torso, PG2.belt, pmat(0x2a2018, 0.7), 0, 0.0, 0, 1, 1, 0.68);
+    addM(torso, PG2.belt, pmat(0x2a2018, 0.7), 0, 0.03, 0, 1.02, 1, 0.72);
     if (!armed) addM(torso, PG2.collar, cloth, 0, 0.64, 0.004, 1.05, 1, 1);
   }
-  addM(torso, PG.neck, skin, 0, 0.67, 0);
   var head = new THREE.Group();
   head.position.set(0, 0.76, 0);
   head.scale.setScalar(1.07);
@@ -2364,7 +2751,7 @@ function mkPerson(kind, r, o) {
   var covered = hat === 'shemagh' || hat === 'ghutra' || hat === 'shayla' || hat === 'helmet';
   var hm = addM(
     head,
-    headGeo(skinHex, hairHex, beard, !covered, hat === 'none' || hat === 'cap', female),
+    headGeo(skinHex, hairHex, beard, !covered, hat === 'none' || hat === 'cap', female, true),
     MP_HEAD,
     0,
     0,
@@ -2372,16 +2759,14 @@ function mkPerson(kind, r, o) {
   );
   hm.castShadow = true;
   // arms; sleeves end in a cuff on robes, gloves on fighters
-  var handM = armed ? glove : skin;
-  u.armL = limb(torso, -0.235, 0.55, 0, PG.uarm, PG.farm, 0.3, cloth, cloth, PG2.hand, handM);
-  u.armR = limb(torso, 0.235, 0.55, 0, PG.uarm, PG.farm, 0.3, cloth, cloth, PG2.hand, handM);
+  u.armL = limb(torso, -0.235, 0.55, 0, null, null, 0.3);
+  u.armR = limb(torso, 0.235, 0.55, 0, null, null, 0.3);
   [u.armL, u.armR].forEach(function (a) {
-    if (armed) a.j.children[1].scale.set(0.78, 0.9, 0.7);
-    else a.j.children[1].scale.set(0.9, 1.15, 0.78);
-    if (robe) addM(a.j, PG2.cuff, female ? cloth : pmat(0xf6f4ee, 0.8), 0, -0.27, 0);
+    if (robe) addM(a.j, PG2.cuff, female ? cloth : pmat(0xf6f4ee, 0.8), 0, -0.27, 0, 0.82, 1, 0.82);
   });
   u.armL.p.rotation.z = -0.1;
   u.armR.p.rotation.z = 0.1;
+  skAttach(g, u, female, [skinHex, topHex, botHex, shoeHex, armed ? 0x24221e : skinHex]);
   if (armed) {
     // helmet with rim and goggles, face wrapped in a lithma, plate carrier, knee pads, rifle
     var olive = pmat(0x3a3f30, 0.6, 0.1),
