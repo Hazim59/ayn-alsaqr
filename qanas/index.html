@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#1b2a4a" />
+    <title>قنّاص الشلة</title>
+    <meta
+      name="description"
+      content="قنّاص الشلة: لعبة قنص كرتونية من تحديات الشلة. اختر شخصيتك، نظّف الساحة، وتحدَّ ربعك."
+    />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Lalezar&family=Tajawal:wght@500;700;800&display=swap"
+    />
+
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+        }
+      }
+    </script>
+    <link rel="stylesheet" href="qanas.css" />
+  </head>
+  <body>
+    <canvas id="gl"></canvas>
+
+    <!-- loading -->
+    <div class="screen" id="load">
+      <h1 class="logo">
+        قنّاص
+        <span>الشلة</span>
+      </h1>
+      <div class="bar"><i id="loadFill"></i></div>
+      <p class="hint" id="loadMsg">يجهّز الساحة…</p>
+    </div>
+
+    <!-- main menu: 3D character preview lives in the canvas behind -->
+    <div class="screen" id="menu" hidden>
+      <header class="top">
+        <a class="ghost" href="../index.html">رجوع</a>
+        <div class="coins">
+          <b id="coins">٠</b>
+          <small>عملة</small>
+        </div>
+      </header>
+      <h1 class="logo">
+        قنّاص
+        <span>الشلة</span>
+      </h1>
+      <div class="menuBtns">
+        <button class="big" id="playBtn" type="button">
+          العب
+          <small id="playSub">المرحلة ١</small>
+        </button>
+        <button class="mid" id="wardBtn" type="button">
+          الخزانة
+          <small>البس شخصيتك</small>
+        </button>
+        <button class="mid" id="lvlBtn" type="button">
+          المراحل
+          <small id="starsSum">٠ نجمة</small>
+        </button>
+        <button class="mid" id="chalBtn" type="button">
+          كود تحدي
+          <small>العب تحدي ربعك</small>
+        </button>
+      </div>
+    </div>
+
+    <!-- wardrobe -->
+    <div class="screen" id="ward" hidden>
+      <header class="top">
+        <button class="ghost" id="wardBack" type="button">رجوع</button>
+        <h2>الخزانة</h2>
+        <span></span>
+      </header>
+      <div class="wardBody">
+        <div class="wardSide">
+          <div class="tabs" id="wardTabs">
+            <button type="button" data-t="all" class="on">الكل</button>
+            <button type="button" data-t="m">رجال</button>
+            <button type="button" data-t="f">بنات</button>
+          </div>
+          <div class="grid" id="wardGrid"></div>
+        </div>
+        <div class="wardInfo">
+          <b id="wardName"></b>
+          <small id="wardPrice"></small>
+          <label class="tog">
+            <input type="checkbox" id="shemTog" />
+            <span>شماغ وعقال</span>
+          </label>
+          <button class="big" id="wardWear" type="button">البس</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- level select -->
+    <div class="screen" id="lvls" hidden>
+      <header class="top">
+        <button class="ghost" id="lvlBack" type="button">رجوع</button>
+        <h2>المراحل</h2>
+        <span></span>
+      </header>
+      <div class="lvlGrid" id="lvlGrid"></div>
+    </div>
+
+    <!-- challenge code -->
+    <div class="screen" id="chal" hidden>
+      <div class="card">
+        <h2>كود تحدي</h2>
+        <p>ربعك أرسل لك كود؟ اكتبه هنا والعب نفس المرحلة بالضبط، وحاول تتفوق على نتيجته.</p>
+        <input id="chalIn" maxlength="24" placeholder="مثلاً: Q3-7KD2-1850" autocomplete="off" />
+        <p class="err" id="chalErr"></p>
+        <div class="row">
+          <button class="big" id="chalGo" type="button">ابدأ التحدي</button>
+          <button class="ghost" id="chalBack" type="button">رجوع</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- in-game HUD -->
+    <div id="hud" hidden>
+      <div class="scope" id="scope">
+        <svg viewBox="0 0 200 200" aria-hidden="true">
+          <circle cx="100" cy="100" r="98" fill="none" stroke="#111" stroke-width="4" />
+          <path d="M0 100h88M112 100h88M100 0v88M100 112v88" stroke="#111" stroke-width="1.2" />
+          <path d="M60 100h20M120 100h20" stroke="#111" stroke-width="3" />
+          <g fill="#111">
+            <circle cx="100" cy="112" r="1.4" />
+            <circle cx="100" cy="124" r="1.4" />
+            <circle cx="100" cy="136" r="1.4" />
+            <circle cx="88" cy="100" r="1.2" />
+            <circle cx="112" cy="100" r="1.2" />
+          </g>
+          <circle cx="100" cy="100" r="1.6" fill="#ff3b3b" />
+        </svg>
+      </div>
+      <div class="cross" id="cross"></div>
+      <div class="hbar">
+        <div class="pill">
+          <small>الأعداء</small>
+          <b id="hEnemies">٠</b>
+        </div>
+        <div class="pill">
+          <small>الوقت</small>
+          <b id="hTime">٠</b>
+        </div>
+        <div class="pill hp">
+          <small>الصحة</small>
+          <i><em id="hHp"></em></i>
+        </div>
+        <div class="pill">
+          <small>الريح</small>
+          <b id="hWind">٠</b>
+        </div>
+      </div>
+      <button class="hbtn" id="pauseBtn" type="button">القائمة</button>
+      <div class="zoom" id="zoomBox">
+        <input type="range" id="zoom" min="3" max="12" step="0.5" value="6" />
+        <small id="zoomLbl">×٦</small>
+      </div>
+      <button class="gbtn scopeBtn" id="scopeBtn" type="button">منظار</button>
+      <button class="gbtn fireBtn" id="fireBtn" type="button">إطلاق</button>
+      <div class="toast" id="toast"></div>
+      <div class="hurt" id="hurt"></div>
+      <div class="rotate" id="rotate"><p>لف الجوال بالعرض للعب</p></div>
+    </div>
+
+    <!-- result / pause -->
+    <div class="screen dim" id="res" hidden>
+      <div class="card">
+        <h2 id="resTitle"></h2>
+        <div class="stars" id="resStars"></div>
+        <p id="resText"></p>
+        <div class="code" id="resCodeBox" hidden>
+          <small>كود التحدي لربعك</small>
+          <b id="resCode"></b>
+          <button class="ghost" id="copyCode" type="button">نسخ ومشاركة</button>
+        </div>
+        <div class="row">
+          <button class="big" id="resNext" type="button"></button>
+          <button class="ghost" id="resMenu" type="button">القائمة</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="qanas.js"></script>
+  </body>
+</html>
