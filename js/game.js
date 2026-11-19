@@ -835,7 +835,7 @@ function makeTextures() {
     sx = sc.getContext('2d'),
     hgt = new Float32Array(S * S),
     r = rng(43);
-  sx.fillStyle = '#5c544b';
+  sx.fillStyle = '#9a7e5e';
   sx.fillRect(0, 0, S, S);
   var hc = mk(S, S),
     hx = hc.getContext('2d');
@@ -846,10 +846,16 @@ function makeTextures() {
       rowH = 24 + Math.floor(r() * 4);
     while (x0 < S) {
       var bw = 38 + r() * 70,
-        c = 108 + Math.floor(r() * 60),
+        c = 176 + Math.floor(r() * 44),
         warm = r();
       var col =
-        'rgb(' + (c + (warm < 0.3 ? 16 : 0)) + ',' + (c - 6) + ',' + (c - 18 - (warm > 0.75 ? 12 : 0)) + ')';
+        'rgb(' +
+        (c + 14 + (warm < 0.3 ? 12 : 0)) +
+        ',' +
+        (c - 4) +
+        ',' +
+        (c - 34 - (warm > 0.75 ? 14 : 0)) +
+        ')';
       [0, S].forEach(function (wx) {
         sx.fillStyle = col;
         sx.beginPath();
@@ -868,7 +874,7 @@ function makeTextures() {
   for (i = 0; i < S * S; i++) hgt[i] = (hd[i * 4] / 255) * 0.8 + n3[i] * 0.2;
   var sd = sx.getImageData(0, 0, S, S);
   for (i = 0; i < S * S; i++) {
-    var m = 0.82 + n3[i] * 0.3;
+    var m = 0.93 + n3[i] * 0.12;
     sd.data[i * 4] *= m;
     sd.data[i * 4 + 1] *= m;
     sd.data[i * 4 + 2] *= m;
@@ -1364,10 +1370,9 @@ function sharedMats() {
   MATS.stone = new THREE.MeshStandardMaterial({
     map: TX.stone,
     normalMap: TX.stoneN,
-    normalScale: new THREE.Vector2(0.35, 0.35),
+    normalScale: new THREE.Vector2(0.3, 0.3),
     vertexColors: true,
-    roughness: 0.9,
-    color: 0xfff6ea
+    roughness: 0.9
   });
   MATS.mud = new THREE.MeshStandardMaterial({
     map: TX.mud,
@@ -1377,7 +1382,8 @@ function sharedMats() {
   });
   MATS.trim = new THREE.MeshStandardMaterial({
     vertexColors: true,
-    roughness: 0.75
+    roughness: 0.8,
+    color: 0xf6eedf
   });
   MATS.glass = new THREE.MeshStandardMaterial({ color: 0x17120e, roughness: 0.3, metalness: 0.2 });
   MATS.glassLit = new THREE.MeshStandardMaterial({
@@ -3521,6 +3527,38 @@ function mocapPose(u, name, t, blend, armed) {
     hinge(23, u.armL.j, 0);
     rot(24, u.armR.p);
     hinge(28, u.armR.j, 0);
+  }
+}
+// hit reaction: knees buckle, the body slumps, then tips over (fall runs 0 -> 1)
+function deathPose(g, fall, fdir) {
+  var u = g.userData,
+    k = Math.min(1, fall * 2.2),
+    kk = k * k * (3 - 2 * k),
+    tip = clamp((fall - 0.25) / 0.75, 0, 1),
+    e = 1 - Math.pow(1 - tip, 3);
+  g.rotation.x = -e * 1.42 * fdir;
+  if (!u.legL) {
+    u.root.position.y = -e * 0.05;
+    return;
+  }
+  u.legL.p.quaternion.identity();
+  u.legR.p.quaternion.identity();
+  u.legL.p.rotation.x = -kk * 0.75;
+  u.legR.p.rotation.x = -kk * 0.5;
+  u.legL.j.rotation.x = kk * 1.35;
+  u.legR.j.rotation.x = kk * 1.05;
+  u.root.position.y = -kk * 0.24 - e * 0.04;
+  u.torso.quaternion.identity();
+  u.torso.rotation.x = -kk * 0.25 * fdir;
+  u.head.quaternion.identity();
+  u.head.rotation.x = -kk * 0.3 * fdir;
+  if (!u.armed) {
+    u.armL.p.quaternion.identity();
+    u.armR.p.quaternion.identity();
+    u.armL.p.rotation.set(-kk * 0.5, 0, -0.1 - kk * 0.5);
+    u.armR.p.rotation.set(-kk * 0.3, 0, 0.1 + kk * 0.6);
+    u.armL.j.rotation.x = -kk * 0.6;
+    u.armR.j.rotation.x = -kk * 0.4;
   }
 }
 // idle / walk / run driven by phase; armed people keep their arms on the rifle
@@ -5708,10 +5746,8 @@ function animateTargets(sdt, dt) {
     if (t.kind === 'p') return;
     var g = t.grp;
     if (!t.alive) {
-      t.fall = Math.min(1, t.fall + sdt * 2.4);
-      var e = 1 - Math.pow(1 - t.fall, 3);
-      g.rotation.x = -e * 1.42 * t.fdir;
-      g.userData.root.position.y = -e * 0.05;
+      t.fall = Math.min(1, t.fall + sdt * 1.9);
+      deathPose(g, t.fall, t.fdir);
       return;
     }
     var toCam = Math.atan2(S.ox - t.px, S.oz - t.pz);
